@@ -1,0 +1,257 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Stores user profile information for tenants and agents.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["tenant", "agent", "admin"] },
+        "city": { "type": "string" },
+        "country": { "type": "string" },
+        "nin": { "type": "string" },
+        "gender": { "type": "string" },
+        "age": { "type": "string" },
+        "avatarUrl": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "phoneVerified": { "type": "boolean" },
+        "verificationLevel": { 
+          "type": "string", 
+          "enum": ["Unverified", "Verified", "Trusted", "Fully Verified"] 
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "email", "role"]
+    },
+    "Review": {
+      "title": "Agent Review",
+      "description": "A review left by a tenant for an agent after a transaction.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "tenantName": { "type": "string" },
+        "agentId": { "type": "string" },
+        "rating": { "type": "number" },
+        "comment": { "type": "string" },
+        "listingId": { "type": "string" },
+        "listingTitle": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["tenantId", "agentId", "rating", "comment", "listingId", "createdAt"]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "Represents a chat between a tenant and an agent regarding a property.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "agentId": { "type": "string" },
+        "listingId": { "type": "string" },
+        "lastMessage": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "tenantName": { "type": "string" },
+        "agentName": { "type": "string" },
+        "listingTitle": { "type": "string" },
+        "listingImage": { "type": "string" },
+        "listingPrice": { "type": "string" },
+        "status": { 
+          "type": "string", 
+          "enum": ["inquiry", "negotiating", "contract_requested", "contract_sent", "paid", "completed"],
+          "default": "inquiry"
+        },
+        "unreadCount_tenant": { "type": "number", "default": 0 },
+        "unreadCount_agent": { "type": "number", "default": 0 }
+      },
+      "required": ["tenantId", "agentId", "listingId"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A single message within a conversation.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "content": { "type": "string" },
+        "senderId": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "agentId": { "type": "string" },
+        "type": { "type": "string", "enum": ["text", "action"], "default": "text" },
+        "actionType": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["content", "senderId", "tenantId", "agentId", "createdAt"]
+    },
+    "Favorite": {
+      "title": "Favorite Listing",
+      "description": "Represents a listing bookmarked by a tenant.",
+      "type": "object",
+      "properties": {
+        "listingId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["listingId", "createdAt"]
+    },
+    "Listing": {
+      "title": "Property Listing",
+      "description": "Represents a property listed by an agent for rent.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "price": { "type": "string" },
+        "priceValue": { "type": "number" },
+        "location": { "type": "string" },
+        "type": { "type": "string", "enum": ["Self-Contain", "1 Bedroom Flat", "Shared"] },
+        "image": { "type": "string" },
+        "images": { "type": "array", "items": { "type": "string" } },
+        "verified": { "type": "boolean" },
+        "isApproved": { "type": "boolean" },
+        "noFee": { "type": "boolean" },
+        "beds": { "type": "number" },
+        "baths": { "type": "number" },
+        "area": { "type": "string" },
+        "amenities": { "type": "array", "items": { "type": "string" } },
+        "landmark": { "type": "string" },
+        "description": { "type": "string" },
+        "isRecentlyAdded": { "type": "boolean" },
+        "slotsLeft": { "type": "number" },
+        "agent": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "name": { "type": "string" },
+            "rating": { "type": "number" },
+            "isVerified": { "type": "boolean" }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "priceValue", "location", "type", "image", "agent"]
+    },
+    "Tour": {
+      "title": "Tour Request",
+      "description": "A request by a tenant to view a property.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "listingId": { "type": "string" },
+        "listingTitle": { "type": "string" },
+        "listingImage": { "type": "string" },
+        "agentId": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "date": { "type": "string" },
+        "time": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "confirmed", "completed", "cancelled"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["listingId", "agentId", "tenantId", "date", "time", "status"]
+    },
+    "Report": {
+      "title": "Listing Report",
+      "description": "A report filed against a listing for fraud or incorrect info.",
+      "type": "object",
+      "properties": {
+        "listingId": { "type": "string" },
+        "reporterId": { "type": "string" },
+        "reason": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string", "default": "pending" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["listingId", "reporterId", "reason", "status"]
+    },
+    "Notification": {
+      "title": "User Notification",
+      "description": "A notification for a user about messages, verifications, etc.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string", "enum": ["message", "verification", "listing", "system"] },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "message", "type", "read", "createdAt"]
+    },
+    "Verification": {
+      "title": "Agent Verification Request",
+      "description": "Information provided by an agent to verify their identity.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "idType": { "type": "string" },
+        "idNumber": { "type": "string" },
+        "role": { "type": "string" },
+        "location": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"], "default": "pending" },
+        "submittedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "name", "idType", "status"]
+    },
+    "Analytics": {
+      "title": "Listing Awareness",
+      "description": "Granular events for tracking listing performance.",
+      "type": "object",
+      "properties": {
+        "listingId": { "type": "string" },
+        "type": { "type": "string", "enum": ["view", "save", "inquiry"] },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["listingId", "type", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/analytics/{analyticsId}": {
+      "schema": "Analytics",
+      "description": "Event log for listing insights."
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Individual user profile documents."
+    },
+    "/users/{userId}/favorites/{listingId}": {
+      "schema": "Favorite",
+      "description": "A subcollection of listings bookmarked by the user."
+    },
+    "/listings/{listingId}": {
+      "schema": "Listing",
+      "description": "Public property listings."
+    },
+    "/conversations/{convId}": {
+      "schema": "Conversation",
+      "description": "Root conversation metadata documents."
+    },
+    "/conversations/{convId}/messages/{msgId}": {
+      "schema": "Message",
+      "description": "Subcollection of messages inside a conversation."
+    },
+    "/reviews/{reviewId}": {
+      "schema": "Review",
+      "description": "Public reviews for agents."
+    },
+    "/tours/{tourId}": {
+      "schema": "Tour",
+      "description": "Scheduled tour requests."
+    },
+    "/reports/{reportId}": {
+      "schema": "Report",
+      "description": "Listing reports for review."
+    },
+    "/verifications/{verifyId}": {
+      "schema": "Verification",
+      "description": "Agent identity verification requests."
+    },
+    "/notifications/{notifId}": {
+      "schema": "Notification",
+      "description": "User notifications."
+    }
+  }
+}

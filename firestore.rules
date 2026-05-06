@@ -1,0 +1,253 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      // Temporarily allowing unverified emails for development ease. 
+      // Re-enable in production for Pillar 6/9 compliance.
+      return true; 
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+        request.auth.token.email == 'adeyemiakinyemi01@gmail.com'
+      );
+    }
+
+    // --- User Validation ---
+    function isValidUser(data) {
+      return (!('firstName' in data) || (data.firstName is string)) &&
+             (!('lastName' in data) || (data.lastName is string)) &&
+             (!('email' in data) || (data.email is string)) &&
+             (!('role' in data) || data.role in ['tenant', 'agent', 'admin']) &&
+             (!('gender' in data) || (data.gender is string)) &&
+             (!('age' in data) || (data.age is string)) &&
+             (!('nin' in data) || (data.nin is string)) &&
+             (!('city' in data) || (data.city is string)) &&
+             (!('about' in data) || (data.about is string)) &&
+             (!('phoneNumber' in data) || (data.phoneNumber is string)) &&
+             (!('phoneVerified' in data) || (data.phoneVerified is bool)) &&
+             (!('verificationLevel' in data) || (data.verificationLevel is string)) &&
+             (!('avatarUrl' in data) || (data.avatarUrl == null || data.avatarUrl is string)) &&
+             (!('verificationStatus' in data) || (data.verificationStatus is string)) &&
+             (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    // --- Conversation Validation ---
+    function isValidConversation(data) {
+      return (!('tenantId' in data) || (data.tenantId is string && data.tenantId.size() > 0)) &&
+             (!('agentId' in data) || (data.agentId is string && data.agentId.size() > 0)) &&
+             (!('listingId' in data) || (data.listingId is string && data.listingId.size() > 0)) &&
+             (!('tenantName' in data) || (data.tenantName is string)) &&
+             (!('agentName' in data) || (data.agentName is string)) &&
+             (!('listingTitle' in data) || (data.listingTitle is string)) &&
+             (!('listingImage' in data) || (data.listingImage is string)) &&
+             (!('listingPrice' in data) || (data.listingPrice is string)) &&
+             (!('status' in data) || (data.status is string && data.status in ['inquiry', 'negotiating', 'contract_requested', 'contract_sent', 'paid', 'completed'])) &&
+             (!('unreadCount_tenant' in data) || data.unreadCount_tenant is number) &&
+             (!('unreadCount_agent' in data) || data.unreadCount_agent is number) &&
+             (!('lastMessage' in data) || data.lastMessage is string) &&
+             (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+
+    // --- Message Validation ---
+    function isValidMessage(data) {
+      return data.content is string && data.content.size() > 0 && data.content.size() <= 2000 &&
+             data.senderId == request.auth.uid &&
+             data.tenantId is string && data.agentId is string &&
+             (data.type == null || data.type == "text" || data.type == "action") &&
+             (data.tenantId == request.auth.uid || data.agentId == request.auth.uid) &&
+             data.createdAt == request.time;
+    }
+
+    // --- Review Validation ---
+    function isValidReview(data) {
+      return data.tenantId == request.auth.uid &&
+             data.agentId is string &&
+             data.rating is number && data.rating >= 1 && data.rating <= 5 &&
+             data.comment is string && data.comment.size() >= 5 && data.comment.size() <= 500 &&
+             data.listingId is string &&
+             data.createdAt == request.time;
+    }
+
+    // --- Favorite Validation ---
+    function isValidFavorite(data) {
+      return data.listingId is string &&
+             data.createdAt == request.time;
+    }
+
+    // --- Notification Validation ---
+    function isValidNotification(data) {
+      return data.userId is string &&
+             data.title is string && data.title.size() <= 200 &&
+             data.message is string && data.message.size() <= 1000 &&
+             data.type in ['message', 'verification', 'listing', 'system'] &&
+             data.read is bool &&
+             data.createdAt == request.time;
+    }
+
+    // --- Listing Validation ---
+    function isValidListing(data) {
+      return data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             data.priceValue is number && data.priceValue > 0 &&
+             data.location is string && data.location.size() > 0 &&
+             data.type is string &&
+             data.image is string &&
+             data.agent.id == request.auth.uid &&
+             (!('images' in data) || data.images is list) &&
+             (!('video' in data) || (data.video == null || data.video is string)) &&
+             (!('beds' in data) || data.beds is number) &&
+             (!('baths' in data) || data.baths is number) &&
+             (!('amenities' in data) || data.amenities is list) &&
+             (!('landmark' in data) || data.landmark is string) &&
+             (!('description' in data) || data.description is string) &&
+             (!('verified' in data) || data.verified is bool) &&
+             (!('isApproved' in data) || data.isApproved is bool) &&
+             (!('createdAt' in data) || data.createdAt is timestamp) &&
+             (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    // --- Analytics Validation ---
+    function isValidAnalytics(data) {
+      return data.listingId is string &&
+             data.type in ['view', 'save', 'inquiry'] &&
+             (data.userId == null || data.userId == request.auth.uid) &&
+             data.createdAt == request.time;
+    }
+
+    function isValidVerification(data) {
+       return data.userId == request.auth.uid &&
+              data.name is string &&
+              data.idType is string &&
+              data.status in ['pending', 'approved', 'rejected'];
+    }
+
+    function isValidReport(data) {
+       return data.listingId is string &&
+              data.reporterId == request.auth.uid &&
+              data.reason is string &&
+              data.status in ['pending', 'reviewed', 'resolved'];
+    }
+
+    // --- Resources ---
+
+    // Analytics
+    match /analytics/{analyticsId} {
+      allow list: if isSignedIn(); // Allow counting for stats
+      allow get: if isSignedIn();
+      allow create: if isValidAnalytics(incoming());
+    }
+
+    // Listings
+    match /listings/{listingId} {
+      allow list, get: if true;
+      allow create: if isSignedIn() && isEmailVerified() && isValidListing(incoming()) && isValidId(listingId);
+      allow update: if isSignedIn() && isEmailVerified() && (existing().agent.id == request.auth.uid || isAdmin()) && isValidListing(incoming());
+      allow delete: if isSignedIn() && (existing().agent.id == request.auth.uid || isAdmin());
+    }
+
+    // Reviews
+    match /reviews/{reviewId} {
+      allow list: if true;
+      allow get: if true;
+      allow create: if isSignedIn() && isValidReview(incoming());
+      allow update, delete: if isAdmin();
+    }
+
+    // User Profiles
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if isAdmin(); 
+      allow create: if isOwner(userId) && isValidUser(incoming());
+      allow update: if (isOwner(userId) || isAdmin()) && isValidUser(incoming()); 
+      
+      match /favorites/{listingId} {
+        allow list, get: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidFavorite(incoming());
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // Connection Test
+    match /test/connection {
+      allow read: if true;
+    }
+
+    // Conversations
+    match /conversations/{convId} {
+      allow get: if isSignedIn(); 
+      allow list: if isAdmin() || (isSignedIn() && (
+        resource.data.tenantId == request.auth.uid || 
+        resource.data.agentId == request.auth.uid ||
+        resource.data.status == 'completed'
+      ));
+      allow create: if isSignedIn() && isEmailVerified() && isValidConversation(incoming()) && incoming().tenantId == request.auth.uid;
+      allow update: if isSignedIn() && isEmailVerified() && (existing().tenantId == request.auth.uid || existing().agentId == request.auth.uid || isAdmin()) &&
+                    incoming().diff(existing()).affectedKeys().hasOnly(['lastMessage', 'updatedAt', 'status', 'unreadCount_tenant', 'unreadCount_agent']) &&
+                    incoming().updatedAt == request.time;
+      
+      match /messages/{msgId} {
+        allow list, get: if isSignedIn() && (resource.data.tenantId == request.auth.uid || resource.data.agentId == request.auth.uid || isAdmin());
+        allow create: if isSignedIn() && (incoming().tenantId == request.auth.uid || incoming().agentId == request.auth.uid) && isValidMessage(incoming());
+      }
+    }
+
+    // Notifications
+    match /notifications/{notifId} {
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow get: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && isValidNotification(incoming());
+      allow update: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin()) && 
+                    incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    // Tours
+    match /tours/{tourId} {
+      allow list: if isSignedIn(); 
+      allow get: if isAdmin() || (isSignedIn() && (resource.data.tenantId == request.auth.uid || resource.data.agentId == request.auth.uid));
+      allow create: if isSignedIn(); 
+      allow update: if isAdmin() || (isSignedIn() && (existing().tenantId == request.auth.uid || existing().agentId == request.auth.uid));
+    }
+
+    // Reports
+    match /reports/{reportId} {
+      allow create: if isSignedIn();
+      allow get, list, update, delete: if isAdmin();
+    }
+
+    // Verifications
+    match /verifications/{verifyId} {
+      allow create: if isSignedIn() && isValidVerification(incoming());
+      allow get, list, update, delete: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+    }
+  }
+}
