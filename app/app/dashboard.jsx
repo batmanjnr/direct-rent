@@ -10,7 +10,10 @@ import {
   StatusBar,
   Dimensions,
   Alert,
-  Image
+  Image,
+  Modal,
+  ActivityIndicator,
+  useColorScheme,
 } from "react-native";
 import {
   Search,
@@ -22,6 +25,8 @@ import {
   Map,
   LayoutGrid,
   Navigation,
+  FileText,
+  X,
 } from "lucide-react-native";
 import {
   collection,
@@ -31,17 +36,27 @@ import {
   doc,
   addDoc,
   serverTimestamp,
+  where,
+  getDocs,
+  orderBy,
+  limit,
 } from "firebase/firestore";
 import { useAuth } from "../../context/AuthContext";
 import { useTheme } from "../../context/ThemeContext";
 import { useRouter } from "expo-router";
 import { db } from "../../lib/firebase";
+import MapView, { Marker, Callout, PROVIDER_GOOGLE } from "react-native-maps";
+import * as Location from "expo-location";
 import { FEATURED_LISTINGS } from "./data";
 import ListingCard from "../../components/listingcard";
 
 const { width, height } = Dimensions.get("window");
 
 const HomeScreen = () => {
+  const [region, setRegion] = useState(null);
+  const [nearbyListings, setNearbyListings] = useState([]);
+  const [locationError, setLocationError] = useState(null);
+  const [geocoded, setGeocoded] = useState({}); // { [listingId]: { latitude, longitude } }
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState("All");
   const [maxBudget, setMaxBudget] = useState(1000000000);
@@ -49,13 +64,53 @@ const HomeScreen = () => {
   const [dbListings, setDbListings] = useState([]);
   const [isMapView, setIsMapView] = useState(false);
   const [isSavingSearch, setIsSavingSearch] = useState(false);
+  const [unread, setUnread] = useState(0);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [showTransactionsModal, setShowTransactionsModal] = useState(false);
+  const [transactions, setTransactions] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
-  const { user, setCurrentListing, setActiveTab } = useAuth();
+  const { user, setCurrentListing, _setCurrentListing, setActiveTab } =
+    useAuth();
   const { theme } = useTheme();
   const router = useRouter();
-  const isDark = theme === "dark";
+  const scheme = useColorScheme();
+  const isDark = scheme === "dark" || theme === "dark";
   const isAgent = user?.role === "agent";
   const filters = ["All", "Self-Contain", "1 Bedroom Flat", "Shared"];
+
+  const tokens = isDark
+    ? {
+        background: "#0A0B0D",
+        canvas: "#071226",
+        headerBg: "#0f172a",
+        card: "#0e1520",
+        accent: "#C5A46E",
+        primaryText: "#FFFFFF",
+        secondaryText: "#BFC3C8",
+        muted: "#94a3b8",
+        border: "#1e293b",
+        inputBg: "#0b1220",
+      }
+    : {
+        background: "#FFFFFF",
+        canvas: "#F7F8FA",
+        headerBg: "#FFFFFF",
+        card: "#F1F5FF",
+        accent: "#2B3467",
+        primaryText: "#0F172A",
+        secondaryText: "#475569",
+        muted: "#94a3b8",
+        border: "#f1f5f9",
+        inputBg: "#f8fafc",
+      };
+
+  const dynamicStyles = {
+    container: { backgroundColor: tokens.background },
+    header: { backgroundColor: tokens.headerBg, borderBottomColor: tokens.border },
+    input: { backgroundColor: tokens.inputBg, color: tokens.primaryText },
+    text: { color: tokens.primaryText },
+  };
 
   useEffect(() => {
     const listingsRef = collection(db, "listings");
@@ -72,6 +127,27 @@ const HomeScreen = () => {
     });
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!user || !user.id) {
+      setUnread(0);
+      return;
+    }
+    const nRef = collection(db, "notifications");
+    const q = query(
+      nRef,
+      where("userId", "==", user.id),
+      where("read", "==", false),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => setUnread(snap.size),
+      (err) => {
+        console.warn("[Dashboard] notifications subscribe failed", err);
+      },
+    );
+    return () => unsub();
+  }, [user]);
 
   const filteredListings = useMemo(() => {
     let baseListings = [...dbListings, ...FEATURED_LISTINGS];
@@ -142,29 +218,160 @@ const HomeScreen = () => {
     }
   };
 
-  const dynamicStyles = {
-    container: { backgroundColor: isDark ? "#020617" : "#ffffff" },
-    header: {
-      backgroundColor: isDark ? "#0f172a" : "#ffffff",
-      borderBottomColor: isDark ? "#1e293b" : "#f1f5f9",
-    },
-    input: {
-      backgroundColor: isDark ? "#0f172a" : "#f8fafc",
-      color: isDark ? "#ffffff" : "#0f172a",
-    },
-    text: { color: isDark ? "#ffffff" : "#0f172a" },
+  // helper: compute distance (meters) between two lat/lng points (Haversine)
+  const distanceMeters = (lat1, lon1, lat2, lon2) => {
+    const toRad = (v) => (v * Math.PI) / 180;
+    const R = 6371000; // meters
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(toRad(lat1)) *
+        Math.cos(toRad(lat2)) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
   };
+
+  // when map view enabled, request location and compute nearby listings within 10 meters
+  useEffect(() => {
+    let mounted = true;
+    const ensureLocationAndCompute = async () => {
+      if (!isMapView) return;
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") {
+          setLocationError("Location permission not granted");
+          return;
+        }
+        const loc = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Highest,
+        });
+        if (!mounted) return;
+        const { latitude, longitude } = loc.coords;
+        setRegion({
+          latitude,
+          longitude,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        });
+
+        // find listings that have coordinates and are within 10 meters
+        const matched = dbListings.filter((l) => {
+          const lat =
+            l.locationLat ||
+            l.coords?.lat ||
+            l.lat ||
+            (geocoded[l.id] && geocoded[l.id].latitude);
+          const lon =
+            l.locationLng ||
+            l.coords?.lng ||
+            l.lng ||
+            (geocoded[l.id] && geocoded[l.id].longitude);
+          if (!lat || !lon) return false;
+          const d = distanceMeters(
+            latitude,
+            longitude,
+            Number(lat),
+            Number(lon),
+          );
+          return d <= 10; // within 10 meters
+        });
+        setNearbyListings(matched);
+
+        // kick off geocoding for listings that lack coords
+        const toGeocode = dbListings.filter((l) => {
+          const has = !!(
+            l.locationLat ||
+            l.locationLng ||
+            l.coords ||
+            l.lat ||
+            l.lng ||
+            (geocoded[l.id] && geocoded[l.id].latitude)
+          );
+          return !has && l.location && l.location.trim().length > 0;
+        });
+
+        if (toGeocode.length > 0) {
+          // sequentially geocode to avoid hitting provider limits
+          for (const listing of toGeocode) {
+            try {
+              const results = await Location.geocodeAsync(listing.location);
+              if (results && results.length > 0) {
+                const r = results[0];
+                setGeocoded((prev) => ({
+                  ...prev,
+                  [listing.id]: {
+                    latitude: r.latitude,
+                    longitude: r.longitude,
+                  },
+                }));
+              }
+            } catch (e) {
+              console.warn(
+                "[Geocode] failed for",
+                listing.id,
+                listing.location,
+                e,
+              );
+            }
+            // small delay to be gentle
+            await new Promise((res) => setTimeout(res, 200));
+          }
+        }
+      } catch (e) {
+        console.warn("Map location error", e);
+        setLocationError(String(e));
+      }
+    };
+    ensureLocationAndCompute();
+    return () => {
+      mounted = false;
+    };
+  }, [isMapView, dbListings, geocoded]);
+
+  // fetch transactions when modal opens
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!showTransactionsModal) return;
+      if (!user || !user.id) return;
+      setHistoryLoading(true);
+      try {
+        const tRef = collection(db, "transactions");
+        const q = query(
+          tRef,
+          where("userId", "==", user.id),
+          orderBy("createdAt", "desc"),
+          limit(50),
+        );
+        const snaps = await getDocs(q);
+        if (cancelled) return;
+        const list = snaps.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setTransactions(list);
+      } catch (e) {
+        console.warn("[Transactions] fetch failed", e);
+      } finally {
+        if (!cancelled) setHistoryLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showTransactionsModal, user?.id]);
 
   return (
     <SafeAreaView style={[styles.safeArea, dynamicStyles.container]}>
       <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
 
-      
       <View style={[styles.header, dynamicStyles.header]}>
         <View style={styles.brandRow}>
-          <View >
-          </View>
-          <Image source={require("../../assets/Direct.png")} style={styles.logoimg} />
+          <View></View>
+          <Image
+            source={require("../../assets/Direct.png")}
+            style={styles.logoimg}
+          />
         </View>
         <View style={styles.headerActions}>
           <TouchableOpacity
@@ -178,10 +385,23 @@ const HomeScreen = () => {
             )}
           </TouchableOpacity>
           <TouchableOpacity
-            onPress={() => setActiveTab("notifications")}
+            onPress={() => router.push("/app/notification")}
             style={styles.iconBtn}
           >
-            <Bell size={22} color={isDark ? "#94a3b8" : "#64748b"} />
+            <Bell size={20} color={isDark ? "#ffffff" : "#1e293b"} />
+            {unread > 0 && (
+              <View style={styles.notificationBadge}>
+                <Text style={styles.notificationBadgeText}>
+                  {unread > 99 ? "99+" : unread}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setShowTransactionsModal(true)}
+            style={styles.iconBtn}
+          >
+            <FileText size={20} color={isDark ? "#ffffff" : "#1e293b"} />
           </TouchableOpacity>
         </View>
       </View>
@@ -190,7 +410,6 @@ const HomeScreen = () => {
         stickyHeaderIndices={[0]}
         showsVerticalScrollIndicator={false}
       >
-        
         <View style={[styles.searchSection, dynamicStyles.container]}>
           <View style={styles.searchBarContainer}>
             <Search size={18} color="#94a3b8" style={styles.searchIcon} />
@@ -252,31 +471,124 @@ const HomeScreen = () => {
           )}
         </View>
 
-        
         {isMapView ? (
           // Placeholder when react-native-maps is not installed. Install it to enable map view.
           <View style={styles.mapContainer}>
-            <View style={styles.mapPlaceholder}>
+            {isMapView ? (
+              region ? (
+                <MapView
+                  provider={PROVIDER_GOOGLE}
+                  style={{ flex: 1 }}
+                  initialRegion={region}
+                  showsUserLocation
+                  followsUserLocation
+                >
+                  {/* user location marker is provided by showsUserLocation; show listing markers */}
+                  {(nearbyListings.length > 0
+                    ? nearbyListings
+                    : dbListings.filter(
+                        (l) =>
+                          !!(
+                            l.locationLat ||
+                            l.locationLng ||
+                            l.coords ||
+                            l.lat
+                          ),
+                      )
+                  ).map((listing) => {
+                    const lat =
+                      listing.locationLat ||
+                      listing.coords?.lat ||
+                      listing.lat ||
+                      (geocoded[listing.id] && geocoded[listing.id].latitude);
+                    const lon =
+                      listing.locationLng ||
+                      listing.coords?.lng ||
+                      listing.lng ||
+                      (geocoded[listing.id] && geocoded[listing.id].longitude);
+                    if (!lat || !lon) return null;
+                    return (
+                      <Marker
+                        key={listing.id}
+                        coordinate={{
+                          latitude: Number(lat),
+                          longitude: Number(lon),
+                        }}
+                      >
+                        <View style={{ alignItems: "center" }}>
+                          <View
+                            style={{
+                              backgroundColor: "#1e3a8a",
+                              paddingHorizontal: 8,
+                              paddingVertical: 4,
+                              borderRadius: 12,
+                              maxWidth: 140,
+                            }}
+                          >
+                            <Text
+                              numberOfLines={1}
+                              style={{
+                                color: "#fff",
+                                fontWeight: "700",
+                                fontSize: 12,
+                              }}
+                            >
+                              {listing.title || "Listing"}
+                            </Text>
+                          </View>
+                          <View
+                            style={{
+                              width: 10,
+                              height: 10,
+                              backgroundColor: "#10b981",
+                              borderRadius: 6,
+                              marginTop: 6,
+                              borderWidth: 2,
+                              borderColor: "#fff",
+                            }}
+                          />
+                        </View>
+                        <Callout tooltip>
+                          <View style={{ padding: 8, maxWidth: 220 }}>
+                            <Text style={{ fontWeight: "800" }}>
+                              {listing.title}
+                            </Text>
+                            <Text style={{ color: "#64748b", marginTop: 4 }}>
+                              {listing.location}
+                            </Text>
+                          </View>
+                        </Callout>
+                      </Marker>
+                    );
+                  })}
+                </MapView>
+              ) : (
+                <View style={styles.mapPlaceholder}>
+                  <Text style={{ color: isDark ? "#94a3b8" : "#64748b" }}>
+                    Locating you...
+                  </Text>
+                </View>
+              )
+            ) : (
+              <View style={styles.mapPlaceholder}>
+                <Text style={{ color: isDark ? "#94a3b8" : "#64748b" }}>
+                  Map is off — toggle the map button to view nearby listings.
+                </Text>
+              </View>
+            )}
+          </View>
+        ) : filteredListings.length === 0 ? (
+          <View style={{ padding: 24, alignItems: "center" }}>
+            <Text style={{ color: isDark ? "#94a3b8" : "#64748b" }}>
+              No listings available.
+            </Text>
+            {isAgent && (
               <Text
-                style={{
-                  textAlign: "center",
-                  color: isDark ? "#fff" : "#0f172a",
-                }}
+                style={{ color: isDark ? "#94a3b8" : "#64748b", marginTop: 12 }}
               >
-                Map view requires the optional 'react-native-maps' native
-                module.
+                Tap the History icon in the header to view transactions.
               </Text>
-              <Text
-                style={{
-                  textAlign: "center",
-                  marginTop: 8,
-                  color: isDark ? "#94a3b8" : "#64748b",
-                }}
-              >
-                Run 'expo install react-native-maps' and rebuild the app to
-                enable maps, or switch to list view.
-              </Text>
-            </View>
+            )}
           </View>
         ) : (
           <View style={styles.gridContainer}>
@@ -297,18 +609,99 @@ const HomeScreen = () => {
                     }
                   }}
                   isAgentView={isAgent}
+                  onEdit={() => {
+                    setCurrentListing(listing);
+                    router.push("/app/creatlisting");
+                  }}
                 />
               </View>
             ))}
           </View>
         )}
       </ScrollView>
+
+      {/* Transaction modal (opened from header button) */}
+      <Modal
+        visible={showTransactionsModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowTransactionsModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View
+            style={[
+              styles.modalContent,
+              { backgroundColor: isDark ? "#0f172a" : "#ffffff" },
+            ]}
+          >
+            <View style={styles.modalHeader}>
+              <Text
+                style={[
+                  styles.sectionTitle,
+                  {
+                    fontSize: 18,
+                    marginBottom: 0,
+                    color: isDark ? "#fff" : "#0f172a",
+                  },
+                ]}
+              >
+                Transactions
+              </Text>
+              <TouchableOpacity
+                onPress={() => setShowTransactionsModal(false)}
+                style={styles.closeButtonModal}
+                accessibilityLabel="Close transactions"
+              >
+                <X size={20} color={isDark ? "#fff" : "#0f172a"} />
+              </TouchableOpacity>
+            </View>
+
+            {historyLoading ? (
+              <View style={{ padding: 20, alignItems: "center" }}>
+                <ActivityIndicator />
+              </View>
+            ) : transactions.length === 0 ? (
+              <View style={{ padding: 20, alignItems: "center" }}>
+                <Text style={{ color: isDark ? "#94a3b8" : "#64748b" }}>
+                  No transactions yet.
+                </Text>
+              </View>
+            ) : (
+              <ScrollView style={{ maxHeight: height * 0.7 }}>
+                {transactions.map((t) => (
+                  <View key={t.id} style={styles.transactionRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontWeight: "700" }}>
+                        {t.title || t.type || "Transaction"}
+                      </Text>
+                      <Text style={{ color: "#64748b", marginTop: 4 }}>
+                        {t.description || t.listingTitle || ""}
+                      </Text>
+                    </View>
+                    <View style={{ alignItems: "flex-end" }}>
+                      <Text style={{ fontWeight: "800" }}>
+                        {t.amount ? `₦${t.amount}` : ""}
+                      </Text>
+                      <Text style={{ color: "#94a3b8", fontSize: 12 }}>
+                        {t.createdAt?.toDate
+                          ? new Date(t.createdAt.toDate()).toLocaleString()
+                          : ""}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
+  closeButtonModal: { padding: 6 },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -317,9 +710,9 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderBottomWidth: 1,
   },
-  logoimg:{
-    width:50,
-    height:50,
+  logoimg: {
+    width: 50,
+    height: 50,
   },
   brandRow: { flexDirection: "row", alignItems: "center" },
   logoBox: {
@@ -333,8 +726,16 @@ const styles = StyleSheet.create({
   },
   brandText: { fontSize: 18, fontWeight: "800" },
   brandAccent: { color: "#0c0a55ff" },
-  headerActions: { flexDirection: "row" },
-  iconBtn: { marginLeft: 12 },
+  headerActions: { flexDirection: "row", alignItems: "center" },
+  iconBtn: {
+    marginLeft: 12,
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "transparent",
+  },
   searchSection: { padding: 20 },
   searchBarContainer: {
     flexDirection: "row",
@@ -399,6 +800,48 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#f1f5f9",
     borderRadius: 30,
+  },
+  notificationBtn: {
+    position: "relative",
+    padding: 0,
+    backgroundColor: "#f1f5f9",
+  },
+  notificationBadge: {
+    position: "absolute",
+    top: -6,
+    right: -6,
+    backgroundColor: "#ef4444",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#fff",
+  },
+  notificationBadgeText: { color: "#fff", fontSize: 10, fontWeight: "700" },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    justifyContent: "flex-end",
+  },
+  modalContent: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    maxHeight: "80%",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 15,
+  },
+  transactionRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderColor: "#e2e8f0",
   },
 });
 

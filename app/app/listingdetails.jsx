@@ -41,6 +41,9 @@ import { storage } from "../../lib/firebase";
 import { ref as storageRef, getDownloadURL } from "firebase/storage";
 import { Video as ExpoVideo } from "expo-av";
 import ChatModal from "../../components/chatmodal";
+import * as Location from "expo-location";
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
+import { WebView } from "react-native-webview";
 
 const { width } = Dimensions.get("window");
 
@@ -53,10 +56,118 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
   const [conversationId, setConversationId] = useState(null);
   const listing = listingProp || currentListing;
   const [activeMedia, setActiveMedia] = useState(0);
+  const [isFavoritedLocal, setIsFavoritedLocal] = useState(false);
   const [showReport, setShowReport] = useState(false);
   const [showVideoModal, setShowVideoModal] = useState(false);
   const [videoUrl, setVideoUrl] = useState(null);
   const [videoLoading, setVideoLoading] = useState(false);
+  const [showRouteModal, setShowRouteModal] = useState(false);
+  const [originCoords, setOriginCoords] = useState(null);
+  const [destCoords, setDestCoords] = useState(null);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const mapRef = useRef(null);
+  const [is3D, setIs3D] = useState(false);
+  const [mapViewType, setMapViewType] = useState("standard");
+  const [showStreetModal, setShowStreetModal] = useState(false);
+  // Provide your Google Maps JavaScript API key here or via environment/config.
+  // To enable embedded interactive Street View set GOOGLE_MAPS_API_KEY to a valid key with Street View / Maps JS enabled.
+  const GOOGLE_MAPS_API_KEY = ""; // <-- set your API key
+
+  // We'll watch the user's location when the route modal is open and update originCoords in real-time.
+  // Also animate the map camera with a 3D pitch and heading reflecting movement.
+  useEffect(() => {
+    let subscriber = null;
+    let lastPos = null;
+
+    const startWatch = async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") {
+          console.warn("Location permission not granted for live routing");
+          return;
+        }
+
+        subscriber = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.Highest,
+            timeInterval: 2000,
+            distanceInterval: 5,
+          },
+          (pos) => {
+            const coords = {
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+            };
+            setOriginCoords(coords);
+
+            // compute heading from last position if available
+            if (lastPos) {
+              const heading = computeBearing(lastPos, coords);
+              // animate camera to follow user with pitch for 3D effect
+              try {
+                if (mapRef.current && mapRef.current.animateCamera) {
+                  mapRef.current.animateCamera(
+                    { center: coords, pitch: 60, heading, zoom: 16 },
+                    { duration: 500 },
+                  );
+                } else if (mapRef.current && mapRef.current.animateToRegion) {
+                  mapRef.current.animateToRegion(
+                    { ...coords, latitudeDelta: 0.005, longitudeDelta: 0.005 },
+                    500,
+                  );
+                }
+              } catch (e) {
+                // ignore
+              }
+            } else {
+              // first update: set camera with pitch
+              try {
+                if (mapRef.current && mapRef.current.animateCamera) {
+                  mapRef.current.animateCamera(
+                    { center: coords, pitch: 60, heading: 0, zoom: 16 },
+                    { duration: 500 },
+                  );
+                }
+              } catch (e) {}
+            }
+
+            lastPos = coords;
+          },
+        );
+      } catch (e) {
+        console.warn("Failed to start location watch", e);
+      }
+    };
+
+    if (showRouteModal) {
+      startWatch();
+    }
+
+    return () => {
+      if (subscriber) subscriber.remove();
+      subscriber = null;
+      lastPos = null;
+    };
+  }, [showRouteModal]);
+
+  // Helper to compute bearing between two coords (in degrees)
+  const computeBearing = (from, to) => {
+    const toRad = (d) => (d * Math.PI) / 180;
+    const toDeg = (r) => (r * 180) / Math.PI;
+    const lat1 = toRad(from.latitude);
+    const lon1 = toRad(from.longitude);
+    const lat2 = toRad(to.latitude);
+    const lon2 = toRad(to.longitude);
+
+    const dLon = lon2 - lon1;
+    const y = Math.sin(dLon) * Math.cos(lat2);
+    const x =
+      Math.cos(lat1) * Math.sin(lat2) -
+      Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+    let brng = Math.atan2(y, x);
+    brng = toDeg(brng);
+    return (brng + 360) % 360;
+  };
 
   const isDark = theme === "dark";
 
@@ -88,21 +199,25 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
 
   // Filter out any accidental video URIs from the carousel images
   const images = (
-    listing.images && listing.images.length > 0
+    listing && listing.images && listing.images.length > 0
       ? listing.images
-      : listing.image
+      : listing && listing.image
         ? [listing.image]
         : []
   ).filter((i) => !isVideoUri(i));
 
   const handleShare = async () => {
     try {
-      await Share.share({
-        message: `Check out this ${listing.title} on DirectRent!`,
-        url: "https://directrent.ng/listings/" + listing.id,
-      });
+      const url = `https://directrent.ng/listings/${listing.id}`;
+      const message = `${listing.title}\n${listing.location || ""}\n${url}`;
+      const result = await Share.share({ message, url });
+      // Optionally show feedback
+      if (result?.action === Share.sharedAction) {
+        // shared
+      }
     } catch (error) {
-      console.error(error.message);
+      console.error("Share failed", error);
+      Alert.alert("Share Failed", "Unable to share listing.");
     }
   };
 
@@ -112,62 +227,163 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
     Linking.openURL(url);
   };
 
-  // Open native maps app (Apple Maps on iOS, geo/Google Maps on Android).
-  const openNativeMaps = () => {
-    const label = listing.title || "Destination";
-    // prefer coordinates if available
+  // Open in-app DirectRent map and show a route from current location to listing destination
+  const openNativeMaps = async () => {
+    console.debug("[ListingDetails] openNativeMaps (fast-path)");
+
+    // Reset coords and show the modal immediately so the UI feels responsive
+    setDestCoords(null);
+    setOriginCoords(null);
+    setShowRouteModal(true);
+    setRouteLoading(true);
+
+    // Helper: run promise but resolve to null on timeout or errors
+    const runWithTimeout = (promise, ms) => {
+      return Promise.race([
+        promise.catch(() => null),
+        new Promise((res) => setTimeout(() => res(null), ms)),
+      ]);
+    };
+
+    const address =
+      (listing?.location || listing?.address || listing?.title || "") +
+      ", Nigeria";
     const lat = listing?.lat || listing?.latitude || listing?.locationLat;
     const lng = listing?.lng || listing?.longitude || listing?.locationLng;
 
-    if (lat && lng) {
-      const latLng = `${lat},${lng}`;
-      if (Platform.OS === "ios") {
-        const url = `http://maps.apple.com/?q=${encodeURIComponent(label)}&ll=${latLng}`;
-        Linking.openURL(url).catch((e) => {
-          console.warn("Failed to open Apple Maps", e);
-        });
-      } else {
-        const geoUrl = `geo:${latLng}?q=${latLng}(${encodeURIComponent(label)})`;
-        Linking.openURL(geoUrl).catch(() => {
-          // fallback to Google Maps web
-          const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(latLng)}`;
-          Linking.openURL(url).catch((e) =>
-            console.warn("Failed to open maps", e),
+    // Destination: prefer listing coords, else try a short geocode, and fall back to a background geocode if that times out
+    const destPromise =
+      lat && lng
+        ? Promise.resolve({ latitude: Number(lat), longitude: Number(lng) })
+        : runWithTimeout(
+            (async () => {
+              try {
+                const g = await Location.geocodeAsync(address);
+                return g && g.length > 0
+                  ? { latitude: g[0].latitude, longitude: g[0].longitude }
+                  : null;
+              } catch (e) {
+                return null;
+              }
+            })(),
+            3000,
           );
-        });
+
+    // Origin: try a fast last-known / low-accuracy location first
+    const originPromise = runWithTimeout(
+      (async () => {
+        try {
+          const { status } = await Location.requestForegroundPermissionsAsync();
+          if (status !== "granted") return null;
+          // low accuracy + short timeout to get a quick position
+          const pos = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+            maximumAge: 10000,
+            timeout: 2500,
+          });
+          return {
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+          };
+        } catch (e) {
+          return null;
+        }
+      })(),
+      2500,
+    );
+
+    try {
+      const [dest, origin] = await Promise.all([destPromise, originPromise]);
+
+      if (dest) setDestCoords(dest);
+      if (origin) setOriginCoords(origin);
+
+      // If we don't have a destination yet, continue geocoding in background and update the map when available
+      if (!dest && !(lat && lng)) {
+        (async () => {
+          try {
+            const g = await Location.geocodeAsync(address);
+            if (g && g.length > 0) {
+              const resolved = {
+                latitude: g[0].latitude,
+                longitude: g[0].longitude,
+              };
+              setDestCoords(resolved);
+              // ensure map recenters to destination when we get a more accurate dest
+              try {
+                if (mapRef.current && mapRef.current.animateToRegion) {
+                  mapRef.current.animateToRegion(
+                    { ...resolved, latitudeDelta: 0.01, longitudeDelta: 0.01 },
+                    500,
+                  );
+                }
+              } catch (e) {}
+            }
+          } catch (e) {
+            console.warn("background geocode failed", e);
+          }
+        })();
       }
+
+      // If we have both points, animate the camera to the origin so users see immediate context
+      if (dest && origin) {
+        try {
+          if (mapRef.current && mapRef.current.animateCamera) {
+            mapRef.current.animateCamera(
+              { center: origin, pitch: is3D ? 60 : 0, heading: 0, zoom: 16 },
+              { duration: 300 },
+            );
+          } else if (mapRef.current && mapRef.current.animateToRegion) {
+            mapRef.current.animateToRegion(
+              { ...origin, latitudeDelta: 0.01, longitudeDelta: 0.01 },
+              500,
+            );
+          }
+        } catch (e) {}
+      } else if (!dest) {
+        // Inform the user we'll update the destination when found but don't block the UI
+        Alert.alert(
+          "Location Unavailable",
+          "Showing map; destination coordinates are not yet available. We will update when found.",
+        );
+      }
+    } catch (e) {
+      console.warn("openNativeMaps (fast-path) failed", e);
+      Alert.alert(
+        "Directions Error",
+        "Unable to show in-app directions right now.",
+      );
+    } finally {
+      setRouteLoading(false);
+    }
+  };
+
+  const handleBack = () => {
+    // Close any open modals first
+    try {
+      if (showRouteModal) setShowRouteModal(false);
+      if (showVideoModal) setShowVideoModal(false);
+      if (showStreetModal) setShowStreetModal(false);
+      if (showChatModal) setShowChatModal(false);
+    } catch (e) {}
+
+    // 1. Reset state
+    setCurrentListing(null);
+
+    // 2. Priority: Custom onBack prop
+    if (onBack) {
+      onBack();
       return;
     }
 
-    // Fallback to address query
-    const destination =
-      listing.location || listing.address || listing.title || "";
-    const query = encodeURIComponent(destination + ", Nigeria");
-    const url =
-      Platform.OS === "ios"
-        ? `http://maps.apple.com/?q=${query}`
-        : `https://www.google.com/maps/search/?api=1&query=${query}`;
-    Linking.openURL(url).catch((e) => console.warn("Failed to open maps", e));
+    // 3. Navigation Logic
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      // Ensure this path matches your file structure inside the /app folder
+      router.replace("/app/dashboard");
+    }
   };
-
- const handleBack = () => {
-  // 1. Reset state
-  setCurrentListing(null);
-
-  // 2. Priority: Custom onBack prop
-  if (onBack) {
-    onBack();
-    return;
-  }
-
-  // 3. Navigation Logic
-  if (router.canGoBack()) {
-    router.back();
-  } else {
-    // Ensure this path matches your file structure inside the /app folder
-    router.replace("/app/dashboard"); 
-  }
-};
 
   const openAgentProfile = () => {
     const agentId = listing?.agent?.id;
@@ -199,6 +415,29 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
     }),
   ).current;
 
+  useEffect(() => {
+    try {
+      setIsFavoritedLocal(
+        !!(listing && favorites && favorites.includes(listing.id)),
+      );
+    } catch (e) {
+      setIsFavoritedLocal(false);
+    }
+  }, [listing, favorites]);
+
+  const handleToggleFavorite = async () => {
+    if (!listing) return;
+    const prev = isFavoritedLocal;
+    setIsFavoritedLocal(!prev);
+    try {
+      await toggleFavorite(listing.id);
+    } catch (err) {
+      console.warn("toggleFavorite failed", err);
+      setIsFavoritedLocal(prev); // revert
+      Alert.alert("Error", "Unable to update favorites.");
+    }
+  };
+
   if (!listing) {
     return (
       <SafeAreaView
@@ -223,7 +462,6 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
       {...panResponder.panHandlers}
     >
       <ScrollView showsVerticalScrollIndicator={false}>
-        
         <View style={styles.mediaContainer}>
           <ScrollView
             horizontal
@@ -243,7 +481,6 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
             ))}
           </ScrollView>
 
-          
           <View style={styles.headerOverlay}>
             <TouchableOpacity onPress={handleBack} style={styles.iconButton}>
               <ArrowLeft color={iconColor} size={20} />
@@ -253,18 +490,22 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
                 <Share2 color={iconColor} size={18} />
               </TouchableOpacity>
               <TouchableOpacity
-                onPress={() => toggleFavorite(listing.id)}
-                style={styles.iconButton}
+                onPress={handleToggleFavorite}
+                style={[
+                  styles.iconButton,
+                  isFavoritedLocal && {
+                    backgroundColor: "rgba(16,185,129,0.12)",
+                  },
+                ]}
               >
                 <Flag
-                  color={favorites.includes(listing.id) ? "#10b981" : iconColor}
+                  color={isFavoritedLocal ? "#10b981" : iconColor}
                   size={18}
                 />
               </TouchableOpacity>
             </View>
           </View>
 
-          
           <View style={styles.pagination}>
             {images.map((_, i) => (
               <View
@@ -275,7 +516,6 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
           </View>
         </View>
 
-        
         <View style={styles.content}>
           <View style={[styles.badge, { backgroundColor: badgeBg }]}>
             <Text style={[styles.badgeText, { color: badgeTextColor }]}>
@@ -294,7 +534,6 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
             </Text>
           </TouchableOpacity>
 
-          
           <TouchableOpacity
             onPress={openNativeMaps}
             style={[styles.directionButton, { backgroundColor: tourBtnBg }]}
@@ -310,7 +549,6 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
             </Text>
           </TouchableOpacity>
 
-          
           {listing.agent && (
             <View style={[styles.agentRow, { backgroundColor: agentRowBg }]}>
               <TouchableOpacity
@@ -418,7 +656,6 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
             </Text>
           </View>
 
-          
           <View style={styles.featuresRow}>
             <View style={styles.featureItem}>
               <Bed size={20} color={subTextColor} />
@@ -447,7 +684,6 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
             ]}
           />
 
-          
           <Text style={[styles.sectionTitle, { color: textColor }]}>
             About this space
           </Text>
@@ -455,7 +691,6 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
             {listing.description}
           </Text>
 
-          
           <Text
             style={[styles.sectionTitle, { marginTop: 20, color: textColor }]}
           >
@@ -478,7 +713,6 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
             ))}
           </View>
 
-          
           {listing.video && (
             <View
               style={[
@@ -541,7 +775,6 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
         </View>
       </ScrollView>
 
-      
       <View
         style={[
           styles.footer,
@@ -551,7 +784,6 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
         <View style={{ flex: 1 }} />
       </View>
 
-      
       <ChatModal
         isOpen={showChatModal}
         onClose={() => setShowChatModal(false)}
@@ -560,7 +792,6 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
         conversationId={conversationId}
       />
 
-      
       <Modal
         visible={showVideoModal}
         animationType="slide"
@@ -572,6 +803,7 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
           <View
             style={{
               padding: 12,
+              paddingTop: Platform.OS === "ios" ? 44 : 20,
               flexDirection: "row",
               justifyContent: "space-between",
               alignItems: "center",
@@ -607,6 +839,245 @@ const ListingDetailsMobile = ({ listing: listingProp, onBack }) => {
               </View>
             )}
           </View>
+        </SafeAreaView>
+      </Modal>
+
+      {/* In-app Route Modal */}
+      <Modal
+        visible={showRouteModal}
+        animationType="slide"
+        onRequestClose={() => setShowRouteModal(false)}
+      >
+        <SafeAreaView style={{ flex: 1 }}>
+          <View style={{ flex: 1 }}>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: 12,
+                paddingTop: 28,
+              }}
+            >
+              <TouchableOpacity
+                onPress={() => setShowRouteModal(false)}
+                style={{ padding: 8 }}
+              >
+                <ArrowLeft color={iconColor} size={22} />
+              </TouchableOpacity>
+              <Text style={{ fontWeight: "800", color: textColor }}>
+                {listing.title || "Route"}
+              </Text>
+              <View
+                style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+              >
+                <TouchableOpacity
+                  onPress={() => {
+                    // toggle between standard and satellite for clearer 3D feel
+                    setIs3D((v) => !v);
+                    setMapViewType((t) =>
+                      t === "standard" ? "satellite" : "standard",
+                    );
+                  }}
+                  style={{
+                    paddingVertical: 6,
+                    paddingHorizontal: 10,
+                    backgroundColor: is3D ? "#0f172a" : "#f1f5f9",
+                    borderRadius: 8,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: is3D ? "#fff" : "#0f172a",
+                      fontWeight: "700",
+                    }}
+                  >
+                    {is3D ? "3D" : "2D"}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => {
+                    // open street view (embedded if API key provided, else open external Maps)
+                    if (!destCoords) {
+                      Alert.alert(
+                        "No Destination",
+                        "Unable to show Street View because listing coordinates are not available.",
+                      );
+                      return;
+                    }
+                    if (
+                      GOOGLE_MAPS_API_KEY &&
+                      GOOGLE_MAPS_API_KEY.trim().length > 0
+                    ) {
+                      setShowStreetModal(true);
+                    } else {
+                      const url = `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${destCoords.latitude},${destCoords.longitude}`;
+                      Linking.openURL(url).catch((e) =>
+                        console.warn("Failed to open external Street View", e),
+                      );
+                    }
+                  }}
+                  style={{
+                    paddingVertical: 6,
+                    paddingHorizontal: 10,
+                    backgroundColor: "#f1f5f9",
+                    borderRadius: 8,
+                  }}
+                >
+                  <Text style={{ color: "#0f172a", fontWeight: "700" }}>
+                    Street
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {routeLoading ? (
+              <View
+                style={{
+                  flex: 1,
+                  justifyContent: "center",
+                  alignItems: "center",
+                }}
+              >
+                <ActivityIndicator size="large" color="#10b981" />
+              </View>
+            ) : (
+              <View style={{ flex: 1 }}>
+                <MapView
+                  ref={mapRef}
+                  style={{ flex: 1 }}
+                  provider={PROVIDER_GOOGLE}
+                  mapType={mapViewType}
+                  pitchEnabled={true}
+                  rotateEnabled={true}
+                  showsBuildings={true}
+                  initialRegion={
+                    destCoords
+                      ? {
+                          latitude: destCoords.latitude,
+                          longitude: destCoords.longitude,
+                          latitudeDelta: 0.05,
+                          longitudeDelta: 0.05,
+                        }
+                      : originCoords
+                        ? {
+                            latitude: originCoords.latitude,
+                            longitude: originCoords.longitude,
+                            latitudeDelta: 0.05,
+                            longitudeDelta: 0.05,
+                          }
+                        : {
+                            latitude: 6.5244,
+                            longitude: 3.3792,
+                            latitudeDelta: 0.5,
+                            longitudeDelta: 0.5,
+                          }
+                  }
+                >
+                  {originCoords && (
+                    <Marker coordinate={originCoords} title="You" />
+                  )}
+                  {destCoords && (
+                    <Marker
+                      coordinate={destCoords}
+                      title={listing.title || "Destination"}
+                    />
+                  )}
+                  {originCoords && destCoords && (
+                    <Polyline
+                      coordinates={[originCoords, destCoords]}
+                      strokeColor="#10b981"
+                      strokeWidth={4}
+                    />
+                  )}
+                </MapView>
+              </View>
+            )}
+          </View>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Street View Modal (embedded) */}
+      <Modal
+        visible={showStreetModal}
+        animationType="slide"
+        onRequestClose={() => setShowStreetModal(false)}
+      >
+        <SafeAreaView style={{ flex: 1 }}>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: 12,
+            }}
+          >
+            <TouchableOpacity
+              onPress={() => setShowStreetModal(false)}
+              style={{ padding: 8 }}
+            >
+              <ArrowLeft color={iconColor} size={22} />
+            </TouchableOpacity>
+            <Text style={{ fontWeight: "800", color: textColor }}>
+              Street View
+            </Text>
+            <View style={{ width: 32 }} />
+          </View>
+
+          {destCoords ? (
+            GOOGLE_MAPS_API_KEY && GOOGLE_MAPS_API_KEY.trim().length > 0 ? (
+              <WebView
+                originWhitelist={["*"]}
+                source={{
+                  html: `<!doctype html><html><head><meta name="viewport" content="initial-scale=1.0, user-scalable=no" /><style>html,body,#panorama{height:100%;margin:0;padding:0;}</style></head><body><div id="panorama"></div><script src="https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}"></script><script>function init(){var pano = new google.maps.StreetViewPanorama(document.getElementById('panorama'),{position:{lat:${destCoords.latitude},lng:${destCoords.longitude}},pov:{heading:270, pitch:0},visible:true});}window.onload=init;</script></body></html>`,
+                }}
+                style={{ flex: 1 }}
+              />
+            ) : (
+              <View
+                style={{
+                  flex: 1,
+                  justifyContent: "center",
+                  alignItems: "center",
+                  padding: 20,
+                }}
+              >
+                <Text style={{ marginBottom: 12, color: textColor }}>
+                  No Google Maps API key configured for embedded Street View.
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    const url = `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${destCoords.latitude},${destCoords.longitude}`;
+                    Linking.openURL(url).catch((e) =>
+                      console.warn("Failed to open external Street View", e),
+                    );
+                  }}
+                  style={{
+                    backgroundColor: "#1e3a8a",
+                    padding: 12,
+                    borderRadius: 8,
+                  }}
+                >
+                  <Text style={{ color: "#fff", fontWeight: "800" }}>
+                    Open in Google Maps
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )
+          ) : (
+            <View
+              style={{
+                flex: 1,
+                justifyContent: "center",
+                alignItems: "center",
+              }}
+            >
+              <Text style={{ color: textColor }}>
+                Destination coordinates unavailable.
+              </Text>
+            </View>
+          )}
         </SafeAreaView>
       </Modal>
     </SafeAreaView>

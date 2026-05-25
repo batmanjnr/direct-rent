@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -16,7 +16,16 @@ import {
 } from "react-native";
 import { X, Eye, EyeOff } from "lucide-react-native";
 import { auth } from "../../lib/firebase";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import {
+  signInWithEmailAndPassword,
+  GoogleAuthProvider,
+  signInWithCredential,
+} from "firebase/auth";
+import * as WebBrowser from "expo-web-browser";
+import * as Google from "expo-auth-session/providers/google";
+import { firebaseConfig } from "../../lib/firebase";
+WebBrowser.maybeCompleteAuthSession();
+
 import { useRouter } from "expo-router";
 
 export default function Home() {
@@ -26,6 +35,62 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
+  const [googleLoading, setGoogleLoading] = useState(false);
+
+  // Configure Google auth request using client IDs from firebaseConfig if available
+  const clientConfig = {
+    expoClientId:
+      firebaseConfig?.expoClientId || firebaseConfig?.webClientId || "",
+    iosClientId: firebaseConfig?.iosClientId || "",
+    androidClientId: firebaseConfig?.androidClientId || "",
+    webClientId: clientConfig?.webClientId || firebaseConfig?.apiKey || "",
+  };
+
+  const [request, response, promptAsync] = Google.useAuthRequest({
+    expoClientId: clientConfig.expoClientId,
+    iosClientId: clientConfig.iosClientId,
+    androidClientId: clientConfig.androidClientId,
+    webClientId: clientConfig.webClientId,
+    scopes: ["profile", "email"],
+  });
+
+  useEffect(() => {
+    const handleGoogleResponse = async () => {
+      if (response?.type === "success") {
+        setGoogleLoading(true);
+        try {
+          const { id_token } = response.params;
+          if (!id_token) throw new Error("No id_token from Google");
+          const credential = GoogleAuthProvider.credential(id_token);
+          const res = await signInWithCredential(auth, credential);
+          // after sign-in, check email verification
+          const user = res.user || auth.currentUser;
+          if (user) {
+            await user.reload();
+            if (user.email && user.emailVerified) {
+              router.replace("/profile");
+            } else {
+              // send verification email and navigate to verify-email screen
+              try {
+                await user.sendEmailVerification();
+              } catch (e) {
+                console.warn("sendEmailVerification failed", e);
+              }
+              router.replace("/auth/verify-email");
+            }
+          } else {
+            router.replace("/app/dashboard");
+          }
+        } catch (e) {
+          console.warn("Google sign-in failed", e);
+          setError("Google sign-in failed. Check configuration.");
+        } finally {
+          setGoogleLoading(false);
+        }
+      }
+    };
+    handleGoogleResponse();
+  }, [response]);
 
   const handleLogin = async () => {
     if (!email || !password) {
@@ -58,20 +123,21 @@ export default function Home() {
       accessible={false}
     >
       <SafeAreaView style={styles.container}>
+        {/* Geometric background shapes */}
+        <View style={styles.shapeTopRight} pointerEvents="none" />
+        <View style={styles.shapeBottomLeft} pointerEvents="none" />
+
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
+          {/* Main content (card removed) */}
           <View style={styles.content}>
-            
-            <View style={styles.header}>
-              <View style={styles.logoContainer}>
-                <Image
-                  source={require("../../assets/Direct.png")}
-                  style={styles.logoImage}
-                />
-              </View>
-              <View style={{ width: 24 }} />
+            <View style={styles.logoCenter}>
+              <Image
+                source={require("../../assets/Direct.png")}
+                style={styles.logoImage}
+              />
             </View>
 
             <View style={styles.titleSection}>
@@ -81,13 +147,13 @@ export default function Home() {
               </Text>
             </View>
 
-            
             <View style={styles.form}>
               {error ? <Text style={styles.errorText}>{error}</Text> : null}
               <Text style={styles.label}>EMAIL ADDRESS</Text>
               <TextInput
                 style={styles.input}
                 placeholder="user@example.com"
+                placeholderTextColor="#6b7280"
                 keyboardType="email-address"
                 autoCapitalize="none"
                 value={email}
@@ -102,6 +168,7 @@ export default function Home() {
                 <TextInput
                   style={styles.passwordInput}
                   placeholder="••••••••"
+                  placeholderTextColor="#6b7280"
                   secureTextEntry={!showPassword}
                   value={password}
                   onChangeText={(text) => {
@@ -113,14 +180,13 @@ export default function Home() {
                   onPress={() => setShowPassword(!showPassword)}
                 >
                   {showPassword ? (
-                    <EyeOff size={20} color="#64748b" />
+                    <EyeOff size={20} color="#374151" />
                   ) : (
-                    <Eye size={20} color="#64748b" />
+                    <Eye size={20} color="#374151" />
                   )}
                 </TouchableOpacity>
               </View>
 
-              
               <TouchableOpacity
                 style={styles.forgotPass}
                 onPress={() => router.push("/reset-password")}
@@ -128,7 +194,6 @@ export default function Home() {
                 <Text style={styles.forgotText}>Forgot password?</Text>
               </TouchableOpacity>
 
-              
               <TouchableOpacity
                 style={[styles.submitButton, isLoading && { opacity: 0.7 }]}
                 onPress={handleLogin}
@@ -141,7 +206,46 @@ export default function Home() {
                 )}
               </TouchableOpacity>
 
-              
+              {/* OR separator */}
+              <View style={styles.orRow}>
+                <View style={styles.orLine} />
+                <Text style={styles.orText}>OR</Text>
+                <View style={styles.orLine} />
+              </View>
+
+              <TouchableOpacity
+                style={[
+                  styles.submitButton,
+                  { backgroundColor: "#db4437", marginTop: 12 },
+                ]}
+                onPress={async () => {
+                  // Prompt Google sign-in
+                  setError("");
+                  if (!request) {
+                    Alert.alert(
+                      "Google Sign-in not configured",
+                      "Missing Google client IDs. Add them to firebase-applet-config.json (webClientId / expoClientId / iosClientId / androidClientId).",
+                    );
+                    return;
+                  }
+                  try {
+                    setGoogleLoading(true);
+                    await promptAsync();
+                  } catch (e) {
+                    console.warn("promptAsync failed", e);
+                    setError("Google sign-in failed to start");
+                    setGoogleLoading(false);
+                  }
+                }}
+                disabled={googleLoading}
+              >
+                {googleLoading ? (
+                  <ActivityIndicator color="white" />
+                ) : (
+                  <Text style={styles.submitText}>Sign in with Google</Text>
+                )}
+              </TouchableOpacity>
+
               <TouchableOpacity
                 style={styles.signupLink}
                 onPress={() => router.push("/auth/signup")}
@@ -159,55 +263,122 @@ export default function Home() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "white" },
-  content: { padding: 24, flex: 1 },
+  /* Canvas */
+  container: { flex: 1, backgroundColor: "#F3F4F6" },
+  centered: { flex: 1, justifyContent: "center", alignItems: "center" },
+  logoCenter: { alignItems: "center", marginTop: 18, marginBottom: 8 },
+  orRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 18,
+    marginBottom: 6,
+  },
+  orLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: "#e6e9ef",
+    marginHorizontal: 12,
+  },
+  orText: { color: "#6b7280", fontWeight: "700" },
+
+  /* Decorative geometric shapes */
+  shapeTopRight: {
+    position: "absolute",
+    top: -100,
+    right: -80,
+    width: 220,
+    height: 220,
+    backgroundColor: "#2B3467",
+    borderRadius: 120,
+    transform: [{ scaleX: 1.2 }],
+    opacity: 0.95,
+  },
+  shapeBottomLeft: {
+    position: "absolute",
+    bottom: -120,
+    left: -100,
+    width: 260,
+    height: 260,
+    backgroundColor: "#2B3467",
+    borderRadius: 160,
+    transform: [{ scaleX: 1.1 }],
+    opacity: 0.95,
+  },
+
+  /* Centered floating card */
+  centerCard: {
+    margin: 20,
+    marginTop: 40,
+    marginBottom: 40,
+    borderRadius: 18,
+    backgroundColor: "#ffffff",
+    // soft shadow to lift card
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.06,
+    shadowRadius: 30,
+    elevation: 6,
+    flex: 1,
+  },
+
+  /* Content inside card */
+  content: { padding: 28, flex: 1 },
   logoImage: { width: 52, height: 52, borderRadius: 8, marginRight: 8 },
   errorText: { color: "#dc2626", marginBottom: 6, fontWeight: "600" },
   header: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 40,
+    marginBottom: 24,
   },
-  logoContainer: { flexDirection: "row", alignItems: "center", margin: "auto" },
+  logoContainer: { flexDirection: "row", alignItems: "center" },
   logoText: { fontSize: 18, fontWeight: "700", color: "#0f172a" },
-  titleSection: { marginBottom: 32 },
+  titleSection: { marginBottom: 20, alignItems: "center" },
   title: {
-    fontSize: 28,
-    fontWeight: "600",
+    fontSize: 26,
+    fontWeight: "700",
     color: "#0f172a",
     textAlign: "center",
   },
   subtitle: {
     fontSize: 14,
-    color: "#64748b",
+    color: "#6b7280",
     textAlign: "center",
     marginTop: 8,
   },
-  form: { marginTop: 10 },
+  form: { marginTop: 10, flex: 1 },
   label: {
     fontSize: 10,
     fontWeight: "700",
-    color: "#94a3b8",
+    color: "#6b7280",
     letterSpacing: 1,
     marginBottom: 8,
-    marginTop: 20,
+    marginTop: 16,
   },
+
+  /* Inputs: white fields with soft borders and subtle shadow */
   input: {
-    backgroundColor: "#f8fafc",
+    backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "#f1f5f9",
+    borderColor: "#e6e9ef",
     padding: 14,
     borderRadius: 12,
     fontSize: 15,
     color: "#0f172a",
+    // lightweight inner shadow effect
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.03,
+    shadowRadius: 8,
+    elevation: 1,
   },
   passwordContainer: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#f8fafc",
+    backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "#f1f5f9",
+    borderColor: "#e6e9ef",
     paddingHorizontal: 14,
     borderRadius: 12,
   },
@@ -217,21 +388,24 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: "#0f172a",
   },
+
+  /* Primary action button: dark navy */
   submitButton: {
-    backgroundColor: "#1e3a8a",
+    backgroundColor: "#2B3467",
     paddingVertical: 16,
     borderRadius: 12,
-    marginTop: 32,
+    marginTop: 28,
     alignItems: "center",
-    shadowColor: "#1e3a8a",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 4,
+    // subtle shadow for button
+    shadowColor: "#2B3467",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 3,
   },
-  submitText: { color: "white", fontWeight: "700", fontSize: 16 },
+  submitText: { color: "#ffffff", fontWeight: "700", fontSize: 16 },
   forgotPass: { marginTop: 12, alignItems: "center" },
-  forgotText: { color: "#1e3a8a", fontWeight: "700", fontSize: 13 },
+  forgotText: { color: "#2B3467", fontWeight: "700", fontSize: 13 },
   signupLink: { marginTop: 12, alignItems: "center" },
-  signupText: { color: "#1e3a8a", fontWeight: "700", fontSize: 13 },
+  signupText: { color: "#2B3467", fontWeight: "700", fontSize: 13 },
 });

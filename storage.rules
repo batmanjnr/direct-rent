@@ -1,0 +1,35 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // helper
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Attachments uploaded by users are stored under:
+    // conversations/{convId}/attachments/{userId}/<files>
+    // Allow writes only when the authenticated user matches the userId path segment.
+    // Allow reads for authenticated participants (we rely on convId containing the user uid) or the project owner.
+    match /conversations/{convId}/attachments/{userId}/{allPaths=**} {
+      allow write: if isSignedIn() && request.auth.uid == userId;
+      allow read: if isSignedIn() && (
+        convId.matches('.*' + request.auth.uid + '.*') ||
+        // owner bypass (optional): replace with your admin email if needed
+        (request.auth.token.email != null && request.auth.token.email.lower() == 'adeyemiakinyemi01@gmail.com')
+      );
+    }
+
+    // Public assets (avatars, listing images) can be readable by everyone
+    // Put such files under 'public/...'
+    match /public/{allPaths=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // By default deny other paths
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

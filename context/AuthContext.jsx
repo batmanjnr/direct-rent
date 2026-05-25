@@ -1,4 +1,10 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useRef,
+} from "react";
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -7,26 +13,41 @@ import {
   updateProfile as updateAuthProfile,
 } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
-import { doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
+import {
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  serverTimestamp,
+} from "firebase/firestore";
 import {
   collection,
   onSnapshot,
   setDoc as fsSetDoc,
   deleteDoc,
-  serverTimestamp,
 } from "firebase/firestore";
 import * as Notifications from "expo-notifications";
 import * as Device from "expo-device";
+import { useRouter } from "expo-router";
+import { getVerifyParams } from "../lib/verifyStore";
+import { useTheme } from "./ThemeContext";
 
 const AuthContext = createContext({});
 
 export const AuthProvider = ({ children }) => {
+  const router = useRouter();
+  const { theme, setTheme } = useTheme();
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("dashboard");
   // Favorites (saved listings) and currently selected listing for details/modals
   const [favorites, setFavorites] = useState([]);
   const [currentListing, setCurrentListing] = useState(null);
+
+  // Refs used to avoid feedback loops and to track unsubscribe handlers
+  const themeSyncedFromProfile = useRef(null);
+  const lastFirestoreTheme = useRef(null);
+  const unsubscribeUserRef = useRef(null);
 
   const fetchUserProfile = async (uid) => {
     try {
@@ -42,62 +63,195 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  // Sync theme to firestore when it changes locally (avoid feedback loops)
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
-      console.debug("[Auth] onAuthStateChanged fired, fbUser:", fbUser);
+    if (!user || !user.id) return;
+    if (themeSyncedFromProfile.current !== user.id) return;
+    if (user.theme === theme || theme === lastFirestoreTheme.current) return;
+    try {
+      updateDoc(doc(db, "users", user.id), { theme }).catch((err) => {
+        console.warn("[Auth] failed to sync theme to firestore", err);
+      });
+      lastFirestoreTheme.current = theme;
+    } catch (e) {
+      console.warn("[Auth] theme sync error", e);
+    }
+  }, [theme, user?.id]);
+
+  // Replace existing onAuthStateChanged effect with a more robust listener that mirrors
+  // the website behavior: attach a realtime user doc listener, prefer pending verify
+  // profiles when present, avoid auto-creating a users doc for unverified users and
+  // perform a minimal create for verified users. Also register push token if available.
+  useEffect(() => {
+    const unsubscribeAuth = onAuthStateChanged(auth, async (fbUser) => {
+      // cleanup any previous user listener
+      if (unsubscribeUserRef.current) {
+        try {
+          unsubscribeUserRef.current();
+        } catch (e) {}
+        unsubscribeUserRef.current = null;
+      }
+
       if (fbUser) {
-        // Try to load the richer profile from Firestore
-        const profile = await fetchUserProfile(fbUser.uid);
-        if (profile) {
-          setUser(profile);
-          console.debug("[Auth] loaded profile from Firestore for", fbUser.uid);
-          // register push token for this device and save to user doc
-          try {
-            if (Device.isDevice) {
-              const { status: existingStatus } =
-                await Notifications.getPermissionsAsync();
-              let finalStatus = existingStatus;
-              if (existingStatus !== "granted") {
-                const { status } =
-                  await Notifications.requestPermissionsAsync();
-                finalStatus = status;
-              }
-              if (finalStatus === "granted") {
-                const tokenData = await Notifications.getExpoPushTokenAsync();
-                const token = tokenData.data;
+        let profileUnsub = null;
+        try {
+          const userRef = doc(db, "users", fbUser.uid);
+          profileUnsub = onSnapshot(
+            userRef,
+            async (snap) => {
+              if (snap && snap.exists()) {
+                const userData = { ...snap.data(), id: fbUser.uid };
+
+                // Ensure hasPassword flag is populated
+                if (userData.hasPassword === undefined) {
+                  userData.hasPassword = fbUser.providerData.some(
+                    (p) => p.providerId === "password",
+                  );
+                }
+
+                // Sync theme from user profile (only once per user session to avoid feedback loops)
+                if (
+                  userData.theme &&
+                  themeSyncedFromProfile.current !== fbUser.uid &&
+                  userData.theme !== theme
+                ) {
+                  setTheme(userData.theme);
+                }
+                themeSyncedFromProfile.current = fbUser.uid;
+                lastFirestoreTheme.current = userData.theme || null;
+
+                setUser(userData);
+                setLoading(false);
+              } else {
+                // No user doc exists in Firestore
+                // Check for a pending verification profile stored by signup
+                let pendingProfile = null;
                 try {
-                  await updateDoc(doc(db, "users", fbUser.uid), {
-                    pushToken: token,
-                  });
+                  const stored = getVerifyParams && getVerifyParams();
+                  if (
+                    stored &&
+                    stored.pending &&
+                    stored.pending.uid === fbUser.uid
+                  ) {
+                    pendingProfile = stored.pending.profile || null;
+                  }
                 } catch (e) {
-                  console.warn("Failed to save push token", e);
+                  // ignore
+                }
+
+                const fallback = {
+                  id: fbUser.uid,
+                  email: fbUser.email,
+                  firstName: fbUser.displayName || "",
+                  lastName: "",
+                  role: "tenant",
+                  avatarUrl: fbUser.photoURL || null,
+                };
+
+                if (pendingProfile) {
+                  const local = {
+                    id: fbUser.uid,
+                    email: fbUser.email,
+                    ...pendingProfile,
+                  };
+                  setUser(local);
+                  console.debug(
+                    "[Auth] using pending verify profile for",
+                    fbUser.uid,
+                  );
+                  setLoading(false);
+                } else if (!fbUser.emailVerified) {
+                  // Unverified user without a pending profile: set local fallback but DO NOT write to Firestore
+                  setUser(fallback);
+                  console.debug(
+                    "[Auth] unverified user, skipping auto-create users doc for",
+                    fbUser.uid,
+                  );
+                  setLoading(false);
+                } else {
+                  // Verified user: create minimal users doc (merge) to ensure downstream rules pass
+                  setUser(fallback);
+                  try {
+                    await setDoc(
+                      userRef,
+                      {
+                        id: fbUser.uid,
+                        name: (fbUser.displayName || "").trim(),
+                        email: fbUser.email || null,
+                        role: "tenant",
+                        createdAt: serverTimestamp(),
+                      },
+                      { merge: true },
+                    );
+                    console.debug(
+                      "[Auth] created minimal users doc for",
+                      fbUser.uid,
+                    );
+                  } catch (e) {
+                    console.warn(
+                      "[Auth] failed to create minimal users doc (may be due to rules)",
+                      e,
+                    );
+                  }
+                  setLoading(false);
                 }
               }
-            }
-          } catch (e) {
-            console.warn("Push token registration failed", e);
-          }
-        } else {
-          // Fallback: create a minimal profile object from firebase user
-          const fallback = {
-            id: fbUser.uid,
-            email: fbUser.email,
-            firstName: fbUser.displayName || "",
-            lastName: "",
-            role: "tenant",
-            avatarUrl: fbUser.photoURL || null,
-          };
-          setUser(fallback);
-          console.debug("[Auth] set fallback profile for", fbUser.uid);
+
+              // After ensuring local user state, attempt push token registration
+              try {
+                if (Device.isDevice) {
+                  const { status: existingStatus } =
+                    await Notifications.getPermissionsAsync();
+                  let finalStatus = existingStatus;
+                  if (existingStatus !== "granted") {
+                    const { status } =
+                      await Notifications.requestPermissionsAsync();
+                    finalStatus = status;
+                  }
+                  if (finalStatus === "granted") {
+                    const tokenData =
+                      await Notifications.getExpoPushTokenAsync();
+                    const token = tokenData.data;
+                    try {
+                      await updateDoc(doc(db, "users", fbUser.uid), {
+                        pushToken: token,
+                      });
+                    } catch (e) {
+                      console.warn("[Auth] Failed to save push token", e);
+                    }
+                  }
+                }
+              } catch (e) {
+                console.warn("[Auth] Push token registration failed", e);
+              }
+            },
+            (err) => {
+              console.warn("[Auth] users/{uid} onSnapshot error", err);
+              setLoading(false);
+            },
+          );
+        } catch (e) {
+          console.warn("[Auth] failed to attach profile listener", e);
+          setLoading(false);
         }
+
+        unsubscribeUserRef.current = profileUnsub;
       } else {
         setUser(null);
-        console.debug("[Auth] no firebase user, set user=null");
+        setLoading(false);
       }
-      setLoading(false);
     });
 
-    return unsubscribe;
+    return () => {
+      try {
+        unsubscribeAuth();
+      } catch (e) {}
+      if (unsubscribeUserRef.current) {
+        try {
+          unsubscribeUserRef.current();
+        } catch (e) {}
+      }
+    };
   }, []);
 
   // Subscribe to the user's favorites subcollection so UI updates in real-time
@@ -177,6 +331,7 @@ export const AuthProvider = ({ children }) => {
     const uid = res.user.uid;
     const userProfile = {
       id: uid,
+      name: `${profile.firstName || ""} ${profile.lastName || ""}`.trim(),
       email,
       firstName: profile.firstName || "",
       lastName: profile.lastName || "",
@@ -251,21 +406,25 @@ export const AuthProvider = ({ children }) => {
     if (!user || !user.id) throw new Error("No user to update");
     const docRef = doc(db, "users", user.id);
     try {
-      await updateDoc(docRef, patch);
-      // If avatar or display name changed, sync to firebase auth profile
-      if (patch.avatarUrl || patch.firstName || patch.lastName) {
+      // Use setDoc with merge so we can create the doc if it doesn't exist
+      await fsSetDoc(docRef, patch, { merge: true });
+
+      // If display name changed, update Auth profile displayName
+      if (patch.firstName || patch.lastName) {
         const authPatch = {};
-        if (patch.avatarUrl) authPatch.photoURL = patch.avatarUrl;
         if (patch.firstName || patch.lastName) {
           authPatch.displayName =
             `${patch.firstName || user.firstName || ""} ${patch.lastName || user.lastName || ""}`.trim();
         }
         try {
-          await updateAuthProfile(auth.currentUser, authPatch);
+          if (Object.keys(authPatch).length > 0) {
+            await updateAuthProfile(auth.currentUser, authPatch);
+          }
         } catch (e) {
-          // ignore
+          console.warn("[Auth] failed to update firebase auth profile", e);
         }
       }
+
       // refresh local user object
       const updatedSnap = await getDoc(docRef);
       if (updatedSnap.exists()) setUser(updatedSnap.data());
@@ -276,22 +435,23 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const registerPushToken = async (uid) => {
+  // Helper to register for push notifications and return token (used by registerPushToken)
+  const registerForPushNotificationsAsync = async () => {
     try {
-      if (!uid) return;
-      // guard: projectId may not be available in some dev environments; wrap and tolerate failures
-      const token = await registerForPushNotificationsAsync().catch((e) => {
-        console.warn("Push token registration failed", e);
-        return null;
-      });
-      if (!token) return;
-      await setDoc(
-        doc(db, "users", uid),
-        { pushToken: token },
-        { merge: true },
-      );
+      if (!Device.isDevice) return null;
+      const { status: existingStatus } =
+        await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+      if (existingStatus !== "granted") {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+      if (finalStatus !== "granted") return null;
+      const tokenData = await Notifications.getExpoPushTokenAsync();
+      return tokenData.data;
     } catch (e) {
-      console.warn("Failed to save push token to user profile", e);
+      console.warn("registerForPushNotificationsAsync failed", e);
+      return null;
     }
   };
 
@@ -300,18 +460,18 @@ export const AuthProvider = ({ children }) => {
       value={{
         user,
         loading,
-        isLoading: loading,
-        isAuthenticated: !!user,
-        activeTab, // Now accessible via useAuth()[cite: 6]
-        setActiveTab, // Now accessible via useAuth()[cite: 6]
+        activeTab,
         favorites,
-        toggleFavorite,
         currentListing,
+        setActiveTab,
+        toggleFavorite,
+        _setCurrentListing,
         setCurrentListing: _setCurrentListing,
         login,
         signUp,
         logout,
         updateProfile,
+        registerForPushNotificationsAsync,
       }}
     >
       {children}

@@ -2,7 +2,7 @@
   "entities": {
     "User": {
       "title": "User Profile",
-      "description": "Stores user profile information for tenants and agents.",
+      "description": "Stores user profile information. Private access for PII.",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
@@ -11,16 +11,20 @@
         "role": { "type": "string", "enum": ["tenant", "agent", "admin"] },
         "city": { "type": "string" },
         "country": { "type": "string" },
-        "nin": { "type": "string" },
+        "nin": { "type": "string", "description": "Highly sensitive PII" },
         "gender": { "type": "string" },
         "age": { "type": "string" },
         "avatarUrl": { "type": "string" },
         "phoneNumber": { "type": "string" },
         "phoneVerified": { "type": "boolean" },
+        "theme": { "type": "string", "enum": ["light", "dark"], "default": "light" },
         "verificationLevel": { 
           "type": "string", 
           "enum": ["Unverified", "Verified", "Trusted", "Fully Verified"] 
         },
+        "verificationStatus": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "completedTxns": { "type": "number", "default": 0 },
+        "avgRating": { "type": "number", "default": 0 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

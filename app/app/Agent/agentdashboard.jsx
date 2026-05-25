@@ -12,6 +12,7 @@ import {
   Modal,
   Alert,
   ActivityIndicator,
+  TextInput,
 } from "react-native";
 import {
   LayoutDashboard,
@@ -39,11 +40,14 @@ import {
   doc,
   deleteDoc,
   where,
+  updateDoc,
+  serverTimestamp,
 } from "firebase/firestore";
 import { db } from "../../../lib/firebase";
 import { useAuth } from "../../../context/AuthContext";
 import { useTheme } from "../../../context/ThemeContext";
 import { useRouter } from "expo-router";
+import EditListingModal from "../../../components/EditListingModal";
 
 const { width } = Dimensions.get("window");
 
@@ -57,12 +61,47 @@ const AdminDashboard = () => {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [loading, setLoading] = useState(true);
   const [listings, setListings] = useState([]);
+  const [listingStats, setListingStats] = useState({}); // { [listingId]: { views, chats } }
+
+  // derived counts for the agent dashboard
+  const counts = useMemo(() => {
+    const total = listings.length;
+    const active = listings.filter((l) => l.isApproved === true).length; // active == approved
+    const pending = listings.filter((l) => !l.isApproved).length;
+    // completed: try several common flags; falls back to 0
+    const completed = listings.filter(
+      (l) =>
+        l.isCompleted === true ||
+        l.isSold === true ||
+        l.isArchived === true ||
+        l.isRented === true,
+    ).length;
+    const withAgent = listings.filter((l) => l.agent && l.agent.id).length;
+    return { total, active, pending, completed, withAgent };
+  }, [listings]);
   const [permissionError, setPermissionError] = useState(false);
   const [users, setUsers] = useState([]);
   const [verifications, setVerifications] = useState([]);
   const [activities, setActivities] = useState([]);
   const [isReviewOpen, setIsReviewOpen] = useState(false);
   const [selectedListing, setSelectedListing] = useState(null);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisData, setAnalysisData] = useState(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editForm, setEditForm] = useState(null);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+
+  // Helper to open edit modal: set form and open modal immediately. Added
+  // console logs for debugging if modal doesn't appear.
+  const openEditModal = (listing) => {
+    console.log(
+      "[AdminDashboard] openEditModal called for listing:",
+      listing?.id,
+    );
+    setEditForm(listing);
+    setEditOpen(true);
+  };
 
   // Dynamic Styles
   const colors = {
@@ -75,6 +114,11 @@ const AdminDashboard = () => {
 
   useEffect(() => {
     const fetchData = async () => {
+      setLoading(true);
+      console.debug(
+        "[AdminDashboard] fetchData start — user:",
+        user && user.id ? { id: user.id, role: user.role } : user,
+      );
       try {
         // Query users & verifications as before (limited)
         const usersPromise = getDocs(query(collection(db, "users"), limit(10)));
@@ -104,7 +148,15 @@ const AdminDashboard = () => {
           );
         }
 
-        const listingsPromise = getDocs(listingsQuery);
+        let listingsPromise;
+        try {
+          listingsPromise = getDocs(listingsQuery);
+        } catch (qerr) {
+          console.warn("Listings query failed", qerr);
+          setPermissionError(true);
+          setListings([]);
+          listingsPromise = Promise.resolve({ docs: [] });
+        }
 
         const [usersSnap, verificationsSnap, listingsSnap] = await Promise.all([
           usersPromise,
@@ -117,6 +169,48 @@ const AdminDashboard = () => {
           ...doc.data(),
         }));
         setListings(listingsData);
+        // fetch per-listing views/chats counts (best-effort)
+        (async () => {
+          try {
+            const statsArr = await Promise.all(
+              listingsData.map(async (l) => {
+                try {
+                  const analyticsQuery = query(
+                    collection(db, "analytics"),
+                    where("listingId", "==", l.id),
+                  );
+                  const analyticsSnap = await getDocs(analyticsQuery);
+                  const views = analyticsSnap.docs.filter(
+                    (d) => (d.data().type || "").toString() === "view",
+                  ).length;
+
+                  const convQuery = query(
+                    collection(db, "conversations"),
+                    where("listingId", "==", l.id),
+                  );
+                  const convSnap = await getDocs(convQuery);
+                  const chats = convSnap.size || convSnap.docs.length;
+
+                  return { id: l.id, views, chats };
+                } catch (e) {
+                  console.warn(
+                    "[AdminDashboard] listing stats fetch failed",
+                    l.id,
+                    e,
+                  );
+                  return { id: l.id, views: 0, chats: 0 };
+                }
+              }),
+            );
+            const map = {};
+            statsArr.forEach((s) => {
+              map[s.id] = { views: s.views, chats: s.chats };
+            });
+            setListingStats(map);
+          } catch (e) {
+            console.warn("[AdminDashboard] failed to fetch listing stats", e);
+          }
+        })();
         setUsers(usersSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
         setVerifications(
           verificationsSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
@@ -136,19 +230,22 @@ const AdminDashboard = () => {
 
         setActivities(combined);
       } catch (err) {
-        console.error("Fetch Error:", err);
-        // Friendly handling for permission errors (common during rule deployment/debug)
-        if (
+        // Handle permission-denied without spamming the console.
+        const isPermissionError =
           err?.code === "permission-denied" ||
-          String(err).toLowerCase().includes("permission")
-        ) {
+          String(err).toLowerCase().includes("permission");
+        if (isPermissionError) {
+          console.warn(
+            "[AdminDashboard] fetchData: permission denied - suppressing error log",
+          );
           setPermissionError(true);
-          // leave listings empty so UI can show 'No listings available'
           setListings([]);
-          // show an alert once to help debugging
+          // Keep UI friendly; avoid showing repeated blocking alerts on app resume.
+        } else {
+          console.error("Fetch Error:", err);
           Alert.alert(
-            "Permissions Error",
-            "The app does not have permission to read listings. Deploy the server-side user creation Cloud Function and ensure Firestore rules allow this read for your authenticated user or make listings public for testing.",
+            "Error",
+            "Unable to load dashboard. Check your connection or permissions.",
           );
         }
       } finally {
@@ -156,7 +253,8 @@ const AdminDashboard = () => {
       }
     };
     fetchData();
-  }, []);
+    // re-run when user becomes available (e.g., after signup/login)
+  }, [user && user.id]);
 
   const handleDelete = (id) => {
     Alert.alert("Delete Listing", "Are you sure? This is permanent.", [
@@ -170,6 +268,44 @@ const AdminDashboard = () => {
         },
       },
     ]);
+  };
+
+  const openAnalysis = async (listing) => {
+    setAnalysisLoading(true);
+    setAnalysisOpen(true);
+    try {
+      // count analytics 'view' events for this listing
+      const analyticsQuery = query(
+        collection(db, "analytics"),
+        where("listingId", "==", listing.id),
+      );
+      const analyticsSnap = await getDocs(analyticsQuery);
+      const views = analyticsSnap.docs.filter(
+        (d) => d.data().type === "view",
+      ).length;
+
+      // count conversations for this listing
+      const convQuery = query(
+        collection(db, "conversations"),
+        where("listingId", "==", listing.id),
+      );
+      const convSnap = await getDocs(convQuery);
+      const chats = convSnap.size || convSnap.docs.length;
+
+      setAnalysisData({ views, chats });
+    } catch (e) {
+      // Analysis errors: suppress permission noise and surface minimal feedback
+      const isPerm = String(e).toLowerCase().includes("permission");
+      if (isPerm) {
+        console.warn("[AdminDashboard] analysis fetch: permission denied");
+      } else {
+        console.error("Analysis fetch error", e);
+        Alert.alert("Error", "Unable to load listing analysis.");
+      }
+      setAnalysisData({ views: 0, chats: 0 });
+    } finally {
+      setAnalysisLoading(false);
+    }
   };
 
   const renderStatCard = (label, value, Icon, color = "#3b82f6") => (
@@ -205,24 +341,20 @@ const AdminDashboard = () => {
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <View>
           <Text style={[styles.logoText, { color: colors.text }]}>
-            DirectRent
+            Dashboard
           </Text>
-          <Text style={styles.adminBadge}>ADMIN PORTAL</Text>
         </View>
         <View style={styles.headerIcons}>
-          <TouchableOpacity
-            style={styles.iconBtn}
-            onPress={() => router.push("/app/notification")}
-          >
-            <Bell size={22} color={colors.text} />
-          </TouchableOpacity>
+          <View style={styles.iconBtn} />
         </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollPadding}>
         <View style={styles.statsGrid}>
-          {renderStatCard("LISTINGS", listings.length, FileText)}
-          {renderStatCard("USERS", users.length, Users)}
+          {renderStatCard("PENDING", counts.pending, Clock, "#f59e0b")}
+          {renderStatCard("ACTIVE", counts.active, BadgeCheck, "#10b981")}
+          {renderStatCard("COMPLETED", counts.completed, TrendingUp, "#6b7280")}
+          {renderStatCard("WITH AGENT", counts.withAgent, Users, "#3b82f6")}
         </View>
 
         <Text style={[styles.sectionTitle, { color: colors.text }]}>
@@ -296,8 +428,14 @@ const AdminDashboard = () => {
                 { backgroundColor: colors.card, borderColor: colors.border },
               ]}
               onPress={() => {
-                setSelectedListing(listing);
-                setIsReviewOpen(true);
+                // Agents tap -> open edit modal as a bottom popup (instead of navigating away)
+                if (user?.role === "agent") {
+                  openEditModal(listing);
+                } else {
+                  // non-agents open the review dialog
+                  setSelectedListing(listing);
+                  setIsReviewOpen(true);
+                }
               }}
             >
               <Image
@@ -316,14 +454,56 @@ const AdminDashboard = () => {
                 <Text style={[styles.rowSubtitle, { color: colors.subtext }]}>
                   {listing.location}
                 </Text>
+                <Text
+                  style={{ color: colors.subtext, fontSize: 12, marginTop: 4 }}
+                >
+                  Views: {listingStats[listing.id]?.views ?? 0} • Chats:{" "}
+                  {listingStats[listing.id]?.chats ?? 0}
+                </Text>
               </View>
               <View style={styles.rowMeta}>
                 <Text style={[styles.rowPrice, { color: colors.text }]}>
                   ₦{listing.priceValue?.toLocaleString()}
                 </Text>
-                <TouchableOpacity onPress={() => handleDelete(listing.id)}>
-                  <MoreVertical size={18} color={colors.subtext} />
-                </TouchableOpacity>
+                <View
+                  style={{ flexDirection: "row", gap: 8, alignItems: "center" }}
+                >
+                  {user?.role === "agent" && user?.id === listing.agent?.id && (
+                    <TouchableOpacity
+                      onPress={() => {
+                        console.log(
+                          "[AdminDashboard] EDIT pressed",
+                          listing.id,
+                        );
+                        openEditModal(listing);
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color: "#2563eb",
+                          fontWeight: "700",
+                          marginRight: 10,
+                        }}
+                      >
+                        EDIT
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity onPress={() => openAnalysis(listing)}>
+                    <Text
+                      style={{
+                        color: "#10b981",
+                        fontWeight: "700",
+                        marginRight: 10,
+                      }}
+                    >
+                      ANALYSIS
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => handleDelete(listing.id)}>
+                    <MoreVertical size={18} color={colors.subtext} />
+                  </TouchableOpacity>
+                </View>
               </View>
             </TouchableOpacity>
           ))
@@ -375,6 +555,96 @@ const AdminDashboard = () => {
           </View>
         </View>
       </Modal>
+
+      {/* Analysis Modal */}
+      {analysisOpen && (
+        <Modal visible={analysisOpen} animationType="slide" transparent={true}>
+          <View style={styles.modalOverlay}>
+            <View
+              style={[styles.modalContent, { backgroundColor: colors.card }]}
+            >
+              <View style={styles.modalHeader}>
+                <Text style={[styles.modalTitle, { color: colors.text }]}>
+                  Listing Analysis
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    setAnalysisOpen(false);
+                    setAnalysisData(null);
+                  }}
+                >
+                  <X size={24} color={colors.text} />
+                </TouchableOpacity>
+              </View>
+              <View style={{ padding: 20 }}>
+                {analysisLoading ? (
+                  <ActivityIndicator />
+                ) : (
+                  <View>
+                    <Text
+                      style={{
+                        color: colors.text,
+                        fontWeight: "700",
+                        fontSize: 16,
+                      }}
+                    >
+                      Views: {analysisData?.views ?? 0}
+                    </Text>
+                    <Text
+                      style={{
+                        color: colors.text,
+                        fontWeight: "700",
+                        fontSize: 16,
+                        marginTop: 8,
+                      }}
+                    >
+                      Chats: {analysisData?.chats ?? 0}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            </View>
+          </View>
+        </Modal>
+      )}
+
+      <EditListingModal
+        visible={editOpen}
+        listing={editForm}
+        onClose={() => {
+          setEditOpen(false);
+          setEditForm(null);
+        }}
+        onSave={async (updated) => {
+          try {
+            const updatable = {
+              title: updated.title,
+              location: updated.location,
+              address: updated.address || "",
+              type: updated.type,
+              beds: updated.beds || null,
+              baths: updated.baths || null,
+              area: updated.area || null,
+              amenities: updated.amenities || [],
+              landmark: updated.landmark || "",
+              description: updated.description || "",
+              noFee: !!updated.noFee,
+              updatedAt: serverTimestamp(),
+            };
+            await updateDoc(doc(db, "listings", updated.id), updatable);
+            setListings((prev) =>
+              prev.map((l) =>
+                l.id === updated.id ? { ...l, ...updatable } : l,
+              ),
+            );
+            setEditOpen(false);
+            setEditForm(null);
+          } catch (e) {
+            console.error("Edit save failed", e);
+            Alert.alert("Error", "Save failed. Check permissions.");
+          }
+        }}
+      />
     </SafeAreaView>
   );
 };
@@ -401,15 +671,17 @@ const styles = StyleSheet.create({
   scrollPadding: { padding: 20, paddingBottom: 40 },
   statsGrid: {
     flexDirection: "row",
+    flexWrap: "wrap",
     justifyContent: "space-between",
     marginBottom: 20,
   },
   statCard: {
-    width: (width - 50) / 2,
+    width: (width - 60) / 2,
     padding: 15,
-    borderRadius: 4,
+    borderRadius: 8,
     borderWidth: 1,
-    minHeight: 120,
+    minHeight: 110,
+    marginBottom: 12,
   },
   iconContainer: {
     width: 36,
@@ -482,6 +754,42 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     fontSize: 12,
     letterSpacing: 1,
+  },
+  label: { fontSize: 14, fontWeight: "500" },
+  inputSimple: {
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    borderRadius: 4,
+    padding: 10,
+    marginTop: 8,
+    backgroundColor: "transparent",
+  },
+  amenityBtn: {
+    borderWidth: 1,
+    borderColor: "#2563eb",
+    borderRadius: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: "transparent",
+  },
+  amenitySelected: {
+    backgroundColor: "#2563eb",
+  },
+  amenityText: {
+    color: "#2563eb",
+    fontWeight: "500",
+    fontSize: 14,
+  },
+  submitBtn: {
+    backgroundColor: "#2563eb",
+    padding: 16,
+    borderRadius: 4,
+    alignItems: "center",
+  },
+  submitText: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 16,
   },
 });
 

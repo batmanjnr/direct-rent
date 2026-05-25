@@ -9,7 +9,9 @@ import {
   ActivityIndicator,
   StatusBar,
   Alert,
+  Platform,
 } from "react-native";
+import { useRouter } from "expo-router";
 import {
   Bell,
   MessageSquare,
@@ -19,6 +21,7 @@ import {
   ChevronRight,
   CheckCheck,
   Inbox,
+  ChevronLeft,
 } from "lucide-react-native";
 import {
   collection,
@@ -40,6 +43,7 @@ const NotificationsScreen = () => {
   const { theme } = useTheme();
   const [notifications, setNotifications] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const router = useRouter();
 
   const isDark = theme === "dark";
 
@@ -185,19 +189,26 @@ const NotificationsScreen = () => {
     <SafeAreaView
       style={[
         styles.container,
-        { backgroundColor: isDark ? "#020617" : "#f8fafc" },
+        {
+          backgroundColor: isDark ? "#020617" : "#f8fafc",
+          paddingTop: Platform.OS === "ios" ? 88 : 64,
+        },
       ]}
     >
       <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
 
-      
+      {/* header: back button (left), centered title, mark-all-read (right) */}
       <View
         style={[
           styles.header,
           { borderBottomColor: isDark ? "#1e293b" : "#e2e8f0" },
         ]}
       >
-        <View style={styles.headerTitleRow}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <ChevronLeft size={20} color={isDark ? "#ffffff" : "#0f172a"} />
+        </TouchableOpacity>
+
+        <View style={styles.headerTitleRowCentered}>
           <Text
             style={[
               styles.headerText,
@@ -214,6 +225,7 @@ const NotificationsScreen = () => {
             </View>
           )}
         </View>
+
         <TouchableOpacity onPress={markAllAsRead} style={styles.markReadBtn}>
           <CheckCheck size={16} color="#10b981" />
           <Text style={styles.markReadText}>Mark all read</Text>
@@ -258,6 +270,12 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   headerTitleRow: { flexDirection: "row", alignItems: "center" },
+  headerTitleRowCentered: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+  },
   headerText: { fontSize: 24, fontWeight: "900" },
   badge: {
     backgroundColor: "#10b981",
@@ -318,6 +336,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
     lineHeight: 20,
   },
+  backBtn: { padding: 8, marginRight: 8 },
 });
 
 export default NotificationsScreen;

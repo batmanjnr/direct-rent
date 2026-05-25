@@ -27,12 +27,19 @@ import {
   Eye,
   EyeOff,
 } from "lucide-react-native";
-import { db } from "../../lib/firebase";
-import { doc, getDoc } from "firebase/firestore";
+import { setVerifyParams } from "../../lib/verifyStore";
+import { auth } from "../../lib/firebase";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { firebaseConfig } from "../../lib/firebase";
+import {
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+} from "firebase/auth";
 
 export default function Signup() {
   const router = useRouter();
-  const { signUp } = useAuth();
+  // keep auth context available for future use (avoid unused var warnings)
+  const authContext = useAuth();
   const [role, setRole] = useState("tenant");
   const [isLoading, setIsLoading] = useState(false);
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
@@ -61,8 +68,9 @@ export default function Signup() {
     "Kisi",
   ];
 
+  // ensure every field is a non-empty string
   const isFormComplete = Object.values(formData).every(
-    (value) => value.trim() !== "",
+    (value) => typeof value === "string" && value.trim() !== "",
   );
   const isFieldInvalid = (value) => hasAttemptedSubmit && value.trim() === "";
 
@@ -84,51 +92,109 @@ export default function Signup() {
 
     setIsLoading(true);
     try {
-      // Use centralized signUp helper that creates auth user and Firestore profile
-      console.debug("[Signup] calling AuthContext.signUp");
-      const profile = await signUp(formData.email, formData.password, {
-        firstName: formData.firstName,
-        lastName: formData.lastName,
-        phoneNumber: `+234${formData.phoneNumber}`,
-        role,
-        city: formData.city,
-        nin: formData.nin,
-      });
+      // Normalize phone to E.164. If user types a leading 0 (e.g. 0801...), remove it and prepend country code 234.
+      const rawPhone = String(formData.phoneNumber || "").trim();
+      let digits = rawPhone.replace(/\D/g, "");
+      if (digits.startsWith("0")) digits = digits.slice(1);
+      // If user already included country code (e.g. 234...), keep it; otherwise add 234
+      if (!digits.startsWith("234") && digits.length > 0)
+        digits = `234${digits}`;
+      const phoneE164 = digits ? `+${digits}` : "";
 
-      console.debug(
-        "[Signup] signUp returned profile:",
-        profile && profile.id ? { id: profile.id } : profile,
-      );
-
-      // Wait for Firestore user document to appear (created by Cloud Function or client) so new users see same data
-      const waitForUserDoc = async (uid, timeout = 6000) => {
-        const start = Date.now();
-        while (Date.now() - start < timeout) {
-          try {
-            const snap = await getDoc(doc(db, "users", uid));
-            if (snap.exists()) return true;
-          } catch (e) {
-            console.warn(
-              "[Signup] getDoc failed while waiting for user doc",
-              e,
-            );
-          }
-          // small delay
-          await new Promise((r) => setTimeout(r, 500));
-        }
-        return false;
-      };
-
-      if (profile && profile.id) {
-        const found = await waitForUserDoc(profile.id);
-        if (!found)
-          console.warn(
-            "[Signup] user doc did not appear within timeout, proceeding anyway",
-          );
+      // Basic validations: email, NIN (11 digits), phone length
+      const emailOk = /^\S+@\S+\.\S+$/.test((formData.email || "").trim());
+      if (!emailOk) {
+        Alert.alert("Invalid Email", "Please provide a valid email address.");
+        setIsLoading(false);
+        return;
+      }
+      const ninDigits = String(formData.nin || "").replace(/\D/g, "");
+      if (ninDigits.length !== 11) {
+        Alert.alert("Invalid NIN", "NIN must be 11 digits.");
+        setIsLoading(false);
+        return;
+      }
+      if (!digits || digits.length < 10) {
+        Alert.alert("Invalid Phone", "Please provide a valid phone number.");
+        setIsLoading(false);
+        return;
       }
 
-      // Navigate to dashboard; AuthProvider's onAuthStateChanged will load the profile
-      router.replace("/dashboard");
+      // Create Auth user now but do NOT create Firestore users/{uid} until email is verified.
+      const pendingProfile = {
+        // id will be set after we create the auth user post-verification
+        name: `${formData.firstName || ""} ${formData.lastName || ""}`.trim(),
+        email: formData.email,
+        firstName: formData.firstName,
+        lastName: formData.lastName,
+        role,
+        city: formData.city,
+        phoneNumber: phoneE164,
+        nin: formData.nin,
+        avatarUrl: null,
+        verificationStatus: "pending",
+        createdAt: new Date().toISOString(),
+      };
+
+      // Create Firebase Auth user and send verification email.
+      try {
+        const email = (formData.email || "").trim();
+        const password = formData.password;
+        const userCredential = await createUserWithEmailAndPassword(
+          auth,
+          email,
+          password,
+        );
+        const user = userCredential.user;
+        // Send verification email
+        await sendEmailVerification(user);
+
+        // Store pending profile with uid so verify-email can complete onboarding after verification
+        if (typeof setVerifyParams !== "function") {
+          console.error("[Signup] verifyStore not available");
+          Alert.alert(
+            "Internal Error",
+            "Unable to proceed to email verification.",
+          );
+          setIsLoading(false);
+          return;
+        }
+        // include uid so verify-email can write users/{uid} after verification
+        setVerifyParams({
+          pending: { uid: user.uid, profile: pendingProfile },
+        });
+        // Also persist to AsyncStorage so pending params survive an app reload
+        try {
+          await AsyncStorage.setItem(
+            "verify_pending",
+            JSON.stringify({
+              pending: {
+                uid: user.uid,
+                profile: pendingProfile,
+                projectId: firebaseConfig?.projectId || null,
+              },
+            }),
+          );
+        } catch (storageErr) {
+          console.warn(
+            "[Signup] failed to persist verify_pending to AsyncStorage",
+            storageErr,
+          );
+        }
+        setIsLoading(false);
+        console.debug("[Signup] created user, routing to verify-email", {
+          role,
+        });
+        // Always route to the email verification flow which finalizes onboarding
+        router.replace(`/auth/verify-email`);
+        return;
+      } catch (authError) {
+        console.error("[Signup] createUser failed", authError);
+        setIsLoading(false);
+        // bubble Firebase auth errors to the user
+        Alert.alert("Signup Failed", authError?.message || String(authError));
+        return;
+      }
     } catch (error) {
       console.error("[Signup] signup failed", error);
       setIsLoading(false);
@@ -329,7 +395,7 @@ export default function Signup() {
                   isFormComplete ? styles.btnActive : styles.btnInactive,
                 ]}
                 onPress={handleSignup}
-                disabled={isLoading}
+                disabled={!isFormComplete || isLoading}
               >
                 {isLoading ? (
                   <ActivityIndicator color="white" />

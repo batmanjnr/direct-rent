@@ -48,11 +48,10 @@ const { width } = Dimensions.get("window");
 
 const AgentProfile = ({ agentId: agentIdProp, onBack }) => {
   const router = useRouter();
-  const { currentListing } = useAuth();
+  const { currentListing, user, setCurrentListing } = useAuth();
   // Some versions of expo-router don't expose useSearchParams in this environment.
   // Fall back to the provided prop or the current selected listing's agent id.
   const agentId = agentIdProp || currentListing?.agent?.id;
-  const { user } = useAuth();
   const [agent, setAgent] = useState(null);
   const [reviews, setReviews] = useState([]);
   const [showReviewModal, setShowReviewModal] = useState(false);
@@ -69,6 +68,7 @@ const AgentProfile = ({ agentId: agentIdProp, onBack }) => {
     successRate: "95%",
     responseTime: "15m",
   });
+  const [agentListings, setAgentListings] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -103,7 +103,31 @@ const AgentProfile = ({ agentId: agentIdProp, onBack }) => {
         }));
 
         setReviews(reviewsData);
-        setStats((prev) => ({ ...prev, avgRating: 4.8, completedTxns: 52 })); // Simplified for conversion
+        // Fetch agent's listings
+        try {
+          const listingsRef = collection(db, "listings");
+          const qListings = query(
+            listingsRef,
+            where("agent.id", "==", agentId),
+            orderBy("createdAt", "desc"),
+            limit(10),
+          );
+          const listingsSnap = await getDocs(qListings);
+          const listingsData = listingsSnap.docs.map((d) => ({
+            id: d.id,
+            ...d.data(),
+          }));
+          setAgentListings(listingsData);
+          setStats((prev) => ({
+            ...prev,
+            avgRating: 4.8,
+            completedTxns: 52,
+            activeListingsCount: listingsData.length,
+          }));
+        } catch (e) {
+          console.warn("Failed to fetch agent listings", e);
+          setStats((prev) => ({ ...prev, avgRating: 4.8, completedTxns: 52 }));
+        }
       } catch (err) {
         console.error("Fetch Error:", err);
       } finally {
@@ -133,7 +157,6 @@ const AgentProfile = ({ agentId: agentIdProp, onBack }) => {
 
   return (
     <View style={styles.screen}>
-      
       <TouchableOpacity onPress={handleBack} style={styles.backButton}>
         <ChevronLeft size={24} color="#64748b" />
       </TouchableOpacity>
@@ -142,7 +165,6 @@ const AgentProfile = ({ agentId: agentIdProp, onBack }) => {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        
         <View style={styles.profileCard}>
           <View style={styles.profileHeader}>
             <View style={styles.avatarWrapper}>
@@ -176,7 +198,6 @@ const AgentProfile = ({ agentId: agentIdProp, onBack }) => {
           </View>
         </View>
 
-        
         <View style={styles.statsGrid}>
           <StatBox
             icon={<CheckCircle2 size={20} color="#60a5fa" />}
@@ -200,7 +221,6 @@ const AgentProfile = ({ agentId: agentIdProp, onBack }) => {
           />
         </View>
 
-        
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Verified Reviews</Text>
           {user?.role === "tenant" && (
@@ -241,9 +261,49 @@ const AgentProfile = ({ agentId: agentIdProp, onBack }) => {
             <Text style={styles.emptyText}>No verified reviews yet.</Text>
           )}
         </ScrollView>
+
+        {/* Other listings by this agent */}
+        <View style={[styles.sectionHeader, { marginTop: 20 }]}>
+          <Text style={styles.sectionTitle}>Other Listings</Text>
+        </View>
+        {agentListings.length > 0 ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={{ paddingBottom: 20 }}
+          >
+            {agentListings.map((l) => (
+              <TouchableOpacity
+                key={l.id}
+                style={styles.reviewCard}
+                onPress={() => {
+                  setCurrentListing(l);
+                  router.push("/app/listingdetails");
+                }}
+              >
+                <Image
+                  source={{ uri: l.image || "https://via.placeholder.com/300" }}
+                  style={{ width: "100%", height: 120, borderRadius: 12 }}
+                />
+                <Text
+                  style={{ marginTop: 8, fontWeight: "800" }}
+                  numberOfLines={1}
+                >
+                  {l.title}
+                </Text>
+                <Text style={{ color: "#64748b", marginTop: 4 }}>
+                  ₦{l.priceValue?.toLocaleString()}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        ) : (
+          <Text style={styles.emptyText}>
+            No other listings from this agent.
+          </Text>
+        )}
       </ScrollView>
 
-      
       <Modal visible={showReviewModal} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>

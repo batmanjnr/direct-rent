@@ -37,32 +37,80 @@ const FavoritesScreen = () => {
   const { theme } = useTheme();
   const isDark = theme === "dark";
 
+  const [unread, setUnread] = useState(0);
+
+  useEffect(() => {
+    if (!user || !user.id) {
+      setUnread(0);
+      return;
+    }
+    const nRef = collection(db, "notifications");
+    const q = query(
+      nRef,
+      where("userId", "==", user.id),
+      where("read", "==", false),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => setUnread(snap.size),
+      (err) => {
+        console.warn("[Favorites] notifications subscribe failed", err);
+      },
+    );
+    return () => unsub();
+  }, [user]);
+
   const [activeChatListingIds, setActiveChatListingIds] = useState([]);
   const [dbListings, setDbListings] = useState([]);
 
   useEffect(() => {
-    const listingsRef = collection(db, "listings");
-    const unsubscribe = onSnapshot(listingsRef, (snapshot) => {
-      const fetched = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-      setDbListings(fetched);
-    });
-    return () => unsubscribe();
+    let unsubscribe = () => {};
+    try {
+      const listingsRef = collection(db, "listings");
+      unsubscribe = onSnapshot(
+        query(listingsRef),
+        (snapshot) => {
+          const fetched = snapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }));
+          setDbListings(fetched);
+        },
+        (err) => {
+          console.warn("Listings subscription failed", err);
+          setDbListings([]);
+        },
+      );
+    } catch (e) {
+      console.warn("Failed to subscribe to listings", e);
+      setDbListings([]);
+    }
+    return () => unsubscribe && unsubscribe();
   }, []);
 
   useEffect(() => {
     if (!user) return;
-    const conversationsRef = collection(db, "conversations");
-    const fieldToFilter = user.role === "tenant" ? "tenantId" : "agentId";
-    const q = query(conversationsRef, where(fieldToFilter, "==", user.id));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const listingIds = snapshot.docs.map((doc) => doc.data().listingId);
-      setActiveChatListingIds([...new Set(listingIds)]);
-    });
-    return () => unsubscribe();
+    let unsubscribe = () => {};
+    try {
+      const conversationsRef = collection(db, "conversations");
+      const fieldToFilter = user.role === "tenant" ? "tenantId" : "agentId";
+      const q = query(conversationsRef, where(fieldToFilter, "==", user.id));
+      unsubscribe = onSnapshot(
+        q,
+        (snapshot) => {
+          const listingIds = snapshot.docs.map((doc) => doc.data().listingId);
+          setActiveChatListingIds([...new Set(listingIds)]);
+        },
+        (err) => {
+          console.warn("Conversations subscription failed", err);
+          setActiveChatListingIds([]);
+        },
+      );
+    } catch (e) {
+      console.warn("Failed to subscribe to conversations", e);
+      setActiveChatListingIds([]);
+    }
+    return () => unsubscribe && unsubscribe();
   }, [user]);
 
   const savedListings = useMemo(() => {
@@ -106,11 +154,11 @@ const FavoritesScreen = () => {
           Saved Properties
         </Text>
         <TouchableOpacity
-          onPress={() => setActiveTab("notifications")}
+          onPress={() => router.push("/app/notification")}
           style={styles.headerBtn}
         >
-          <Bell size={22} color={isDark ? "#94a3b8" : "#64748b"} />
-          <View style={styles.notifDot} />
+          <Bell size={20} color={isDark ? "#ffffff" : "#1e293b"} />
+          {unread > 0 && <View style={styles.notifDot} />}
         </TouchableOpacity>
       </View>
 
