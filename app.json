@@ -2,7 +2,7 @@
   "expo": {
     "scheme": "directrent",
     "name": "DirectRent",
-    "slug": "DirectRent",
+    "slug": "reactNative",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/Direct.png",
