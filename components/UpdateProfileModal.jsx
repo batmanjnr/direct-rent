@@ -17,6 +17,7 @@ import { useTheme } from "../context/ThemeContext";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system";
 import * as ImageManipulator from "expo-image-manipulator";
+import { BlurView } from 'expo-blur';
 // import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 // import { storage } from "../lib/firebase";
 
@@ -206,24 +207,43 @@ const UpdateProfileModal = ({ visible, onClose }) => {
   };
 
   return (
-    <Modal visible={visible} animationType="slide" transparent>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={styles.overlay}
-      >
-        <View
-          style={[
-            styles.container,
-            { backgroundColor: isDark ? "#0b1220" : "#fff" },
-          ]}
-        >
+  <Modal visible={visible} animationType="slide" transparent>
+    <KeyboardAvoidingView
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      style={styles.overlay}
+    >
+   <View 
+  style={[
+    styles.outerContainer, 
+    { 
+      borderColor: isDark ? "rgba(255, 255, 255, 0.09)" : "rgba(255, 255, 255, 0.6)",
+      shadowOpacity: isDark ? 0.3 : 0.1 
+    }
+  ]}
+>
+  {/* Real Native Frosted Glass Surface Layer */}
+  <BlurView 
+    intensity={isDark ? 30 : 75} // Increased intensity on light mode to give that rich frosted texture
+    tint={isDark ? "dark" : "light"} 
+    style={StyleSheet.absoluteFill} 
+  />
+  
+  {/* Base Tint Wash Container */}
+  <View 
+    style={[
+      styles.container, 
+      { 
+        backgroundColor: isDark ? "rgba(30, 41, 59, 0.25)" : "rgba(255, 255, 255, 0.45)" 
+      }
+    ]}
+  >
           <Text style={[styles.title, { color: isDark ? "#fff" : "#0f172a" }]}>
             Edit Profile
           </Text>
 
           <TouchableOpacity
             onPress={pickAndUpload}
-            style={{ marginBottom: 12, alignItems: "center" }}
+            style={{ marginBottom: 16, alignItems: "center" }}
           >
             {avatarPreview ? (
               <Image
@@ -233,6 +253,8 @@ const UpdateProfileModal = ({ visible, onClose }) => {
                   height: 96,
                   borderRadius: 48,
                   marginBottom: 8,
+                  borderWidth: 1.5,
+                  borderColor: "rgba(255, 255, 255, 0.4)", // White-glass glowing ring highlight
                 }}
               />
             ) : (
@@ -241,24 +263,28 @@ const UpdateProfileModal = ({ visible, onClose }) => {
                   width: 96,
                   height: 96,
                   borderRadius: 48,
-                  backgroundColor: isDark ? "#071026" : "#f3f4f6",
+                  backgroundColor: isDark ? "rgba(255, 255, 255, 0.05)" : "rgba(15, 23, 42, 0.04)",
                   alignItems: "center",
                   justifyContent: "center",
                   marginBottom: 8,
+                  borderWidth: 1,
+                  borderColor: "rgba(255, 255, 255, 0.1)",
                 }}
               >
-                <Text style={{ color: isDark ? "#fff" : "#0f172a" }}>
+                <Text style={{ color: isDark ? "#fff" : "#0f172a", fontWeight: "600" }}>
                   Photo
                 </Text>
               </View>
             )}
             {avatarUploading ? (
-              <ActivityIndicator />
+              <ActivityIndicator size="small" color={isDark ? "#fff" : "#2563eb"} />
             ) : (
               <Text
                 style={{
-                  color: isDark ? "#94a3b8" : "#0f172a",
+                  color: isDark ? "#94a3b8" : "#475569",
                   marginBottom: 6,
+                  fontSize: 13,
+                  fontWeight: "600",
                 }}
               >
                 Tap to change photo
@@ -272,12 +298,12 @@ const UpdateProfileModal = ({ visible, onClose }) => {
             value={firstName}
             onChangeText={setFirstName}
             style={[
-              styles.input,
-              {
-                backgroundColor: isDark ? "#071026" : "#f8fafc",
-                color: isDark ? "#fff" : "#0f172a",
-              },
-            ]}
+  styles.input,
+  {
+    backgroundColor: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
+    color: isDark ? "#fff" : "#0f172a",
+  },
+]}
           />
 
           <TextInput
@@ -286,12 +312,12 @@ const UpdateProfileModal = ({ visible, onClose }) => {
             value={lastName}
             onChangeText={setLastName}
             style={[
-              styles.input,
-              {
-                backgroundColor: isDark ? "#071026" : "#f8fafc",
-                color: isDark ? "#fff" : "#0f172a",
-              },
-            ]}
+  styles.input,
+  {
+    backgroundColor: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
+    color: isDark ? "#fff" : "#0f172a",
+  },
+]}
           />
 
           <TextInput
@@ -301,12 +327,12 @@ const UpdateProfileModal = ({ visible, onClose }) => {
             onChangeText={setPhoneNumber}
             keyboardType="phone-pad"
             style={[
-              styles.input,
-              {
-                backgroundColor: isDark ? "#071026" : "#f8fafc",
-                color: isDark ? "#fff" : "#0f172a",
-              },
-            ]}
+  styles.input,
+  {
+    backgroundColor: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
+    color: isDark ? "#fff" : "#0f172a",
+  },
+]}
           />
 
           <TextInput
@@ -315,12 +341,12 @@ const UpdateProfileModal = ({ visible, onClose }) => {
             value={gender}
             onChangeText={setGender}
             style={[
-              styles.input,
-              {
-                backgroundColor: isDark ? "#071026" : "#f8fafc",
-                color: isDark ? "#fff" : "#0f172a",
-              },
-            ]}
+  styles.input,
+  {
+    backgroundColor: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
+    color: isDark ? "#fff" : "#0f172a",
+  },
+]}
           />
 
           <TextInput
@@ -330,12 +356,12 @@ const UpdateProfileModal = ({ visible, onClose }) => {
             onChangeText={setAge}
             keyboardType="numeric"
             style={[
-              styles.input,
-              {
-                backgroundColor: isDark ? "#071026" : "#f8fafc",
-                color: isDark ? "#fff" : "#0f172a",
-              },
-            ]}
+  styles.input,
+  {
+    backgroundColor: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
+    color: isDark ? "#fff" : "#0f172a",
+  },
+]}
           />
 
           <View style={styles.actionsRow}>
@@ -343,7 +369,7 @@ const UpdateProfileModal = ({ visible, onClose }) => {
               onPress={onClose}
               style={[
                 styles.btn,
-                { backgroundColor: isDark ? "#1e293b" : "#e2e8f0" },
+                { backgroundColor: isDark ? "rgba(255, 255, 255, 0.08)" : "rgba(15, 23, 42, 0.05)" },
               ]}
             >
               <Text
@@ -359,7 +385,7 @@ const UpdateProfileModal = ({ visible, onClose }) => {
               onPress={handleSave}
               style={[
                 styles.btn,
-                { backgroundColor: isDark ? "#2563eb" : "#3b82f6" },
+                { backgroundColor: isDark ? "#3b82f6" : "#2563eb" },
               ]}
               disabled={loading}
             >
@@ -371,24 +397,71 @@ const UpdateProfileModal = ({ visible, onClose }) => {
             </TouchableOpacity>
           </View>
         </View>
-      </KeyboardAvoidingView>
-    </Modal>
-  );
-};
+      </View>
+    </KeyboardAvoidingView>
+  </Modal>
+);};
 
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "rgba(2,6,23,0.5)",
+    backgroundColor: "rgba(3, 7, 18, 0.65)", // Dark cinematic overlay to make glass modal stand out
   },
-  container: { width: "90%", padding: 16, borderRadius: 12 },
-  title: { fontSize: 18, fontWeight: "700", marginBottom: 12 },
-  input: { padding: 12, borderRadius: 10, marginBottom: 8 },
-  actionsRow: { flexDirection: "row", justifyContent: "flex-end", gap: 8 },
-  btn: { padding: 12, borderRadius: 10, minWidth: 100, alignItems: "center" },
-  btnText: { color: "#fff", fontWeight: "700" },
+outerContainer: {
+  width: "90%",
+  borderRadius: 36, 
+  overflow: "hidden", 
+  borderWidth: 1,
+  shadowColor: "#000",
+  shadowOffset: { width: 0, height: 24 },
+  shadowRadius: 32,
+  elevation: 8,
+},
+container: { 
+  width: "100%", 
+  padding: 24, 
+},
+// ... keep everything else identical below
+  title: { 
+    fontSize: 22, 
+    fontWeight: "700", 
+    marginBottom: 20,
+    letterSpacing: -0.4,
+    textAlign: "center"
+  },
+  input: { 
+    paddingVertical: 16, 
+    paddingHorizontal: 20, 
+    borderRadius: 100, // Uniform capsule layout fields matching main menu bar style
+    marginBottom: 12,
+    fontSize: 15,
+    fontWeight: "500",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.05)",
+  },
+  actionsRow: { 
+    flexDirection: "row", 
+    justifyContent: "space-between", // Spreads actions out cleanly inside the bar frame
+    gap: 12,
+    marginTop: 14 
+  },
+  btn: { 
+    flex: 1, // Ensures cancel and save take up equal balanced column splits
+    paddingVertical: 18, // Matches the exact menu items button line height
+    borderRadius: 100, // Perfectly aligned capsule layout buttons
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.04)"
+  },
+  btnText: { 
+    color: "#fff", 
+    fontWeight: "700",
+    fontSize: 16,
+    letterSpacing: -0.2
+  },
 });
 
 export default UpdateProfileModal;

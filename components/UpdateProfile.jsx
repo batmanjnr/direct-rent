@@ -14,6 +14,7 @@ import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage } from "../lib/firebase";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
+import { BlurView } from 'expo-blur';
 
 const UpdateProfile = () => {
   const { user, updateProfile } = useAuth();
@@ -75,20 +76,15 @@ const UpdateProfile = () => {
   };
 
   return (
-    <View
-      style={[
-        styles.container,
-        {
-          backgroundColor: isDark ? "#0b1220" : "#fff",
-          borderColor: isDark ? "#1e293b" : "#f1f5f9",
-          borderWidth: 1,
-          borderRadius: 16,
-          marginBottom: 16,
-          padding: 16,
-          minHeight: 120,
-        },
-      ]}
-    >
+  <View style={styles.outerContainer}>
+    {/* Real Native Frosted Glass Layer */}
+    <BlurView 
+      intensity={isDark ? 25 : 60} 
+      tint={isDark ? "dark" : "light"} 
+      style={StyleSheet.absoluteFill} 
+    />
+    
+    <View style={styles.innerContent}>
       <TouchableOpacity style={styles.avatarRow} onPress={pickImage}>
         {user?.avatarUrl ? (
           <Image source={{ uri: user.avatarUrl }} style={styles.avatar} />
@@ -96,7 +92,7 @@ const UpdateProfile = () => {
           <View
             style={[
               styles.avatarPlaceholder,
-              { backgroundColor: isDark ? "#071026" : "#f1f5f9" },
+              { backgroundColor: isDark ? "rgba(255, 255, 255, 0.05)" : "rgba(15, 23, 42, 0.04)" },
             ]}
           >
             <Text style={{ color: isDark ? "#94a3b8" : "#0f172a" }}>
@@ -119,7 +115,7 @@ const UpdateProfile = () => {
         style={[
           styles.input,
           {
-            backgroundColor: isDark ? "#071026" : "#f8fafc",
+            backgroundColor: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(15, 23, 42, 0.02)",
             color: isDark ? "#fff" : "#0f172a",
           },
         ]}
@@ -132,7 +128,7 @@ const UpdateProfile = () => {
         style={[
           styles.input,
           {
-            backgroundColor: isDark ? "#071026" : "#f8fafc",
+            backgroundColor: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(15, 23, 42, 0.02)",
             color: isDark ? "#fff" : "#0f172a",
           },
         ]}
@@ -145,7 +141,7 @@ const UpdateProfile = () => {
         style={[
           styles.input,
           {
-            backgroundColor: isDark ? "#071026" : "#f8fafc",
+            backgroundColor: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(15, 23, 42, 0.02)",
             color: isDark ? "#fff" : "#0f172a",
           },
         ]}
@@ -159,14 +155,14 @@ const UpdateProfile = () => {
         style={[
           styles.input,
           {
-            backgroundColor: isDark ? "#071026" : "#f8fafc",
+            backgroundColor: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(15, 23, 42, 0.02)",
             color: isDark ? "#fff" : "#0f172a",
           },
         ]}
       />
 
       <TouchableOpacity
-        style={[styles.saveBtn, { backgroundColor: "#10b981" }]}
+        style={[styles.saveBtn, { backgroundColor: isDark ? "#3b82f6" : "#2563eb" }]}
         onPress={handleSave}
         disabled={loading}
       >
@@ -177,30 +173,76 @@ const UpdateProfile = () => {
         )}
       </TouchableOpacity>
     </View>
-  );
-};
-
+  </View>
+);
 const styles = StyleSheet.create({
-  container: {},
-  avatarRow: { flexDirection: "row", alignItems: "center", marginBottom: 12 },
-  avatar: { width: 72, height: 72, borderRadius: 36, marginRight: 12 },
+  outerContainer: {
+    borderRadius: 36, // Deep smooth capsule framing from your image
+    marginBottom: 16,
+    minHeight: 120,
+    overflow: "hidden", // Crucial: clips the BlurView layout strictly within the card boundaries
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.09)", // Ultra-thin glass line reflection
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.15,
+    shadowRadius: 24,
+    elevation: 4,
+  },
+  innerContent: {
+    padding: 24, // Keeps form layout spacious and elegant
+  },
+  avatarRow: { 
+    flexDirection: "row", 
+    alignItems: "center", 
+    marginBottom: 20 
+  },
+  avatar: { 
+    width: 68, 
+    height: 68, 
+    borderRadius: 34, 
+    marginRight: 16,
+    borderWidth: 1.5,
+    borderColor: "rgba(255, 255, 255, 0.4)", // White-glass neon rim glow highlight
+  },
   avatarPlaceholder: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 68,
+    height: 68,
+    borderRadius: 34,
     justifyContent: "center",
     alignItems: "center",
-    marginRight: 12,
+    marginRight: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.1)",
   },
-  changeText: { fontWeight: "700" },
-  input: { padding: 12, borderRadius: 12, marginBottom: 8 },
+  changeText: { 
+    fontSize: 15,
+    fontWeight: "700",
+    letterSpacing: -0.2,
+  },
+  input: { 
+    paddingVertical: 16, 
+    paddingHorizontal: 20, 
+    borderRadius: 100, // Complete sleek pill inputs matching image buttons
+    marginBottom: 12, 
+    fontSize: 15,
+    fontWeight: "500",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.05)",
+  },
   saveBtn: {
-    padding: 14,
-    borderRadius: 12,
+    paddingVertical: 18, // Perfectly matches profile menu buttons line height 
+    paddingHorizontal: 20, 
+    borderRadius: 100, // Consistent pill aesthetic
     alignItems: "center",
-    marginTop: 8,
+    justifyContent: "center",
+    marginTop: 10,
   },
-  saveText: { color: "#fff", fontWeight: "700" },
-});
-
+  saveText: { 
+    color: "#fff", 
+    fontWeight: "700",
+    fontSize: 16,
+    letterSpacing: -0.2,
+  },
+});}
 export default UpdateProfile;

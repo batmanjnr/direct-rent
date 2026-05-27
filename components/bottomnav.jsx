@@ -109,26 +109,32 @@ const BottomNav = ({ activeTab, setActiveTab, user }) => {
               activeOpacity={0.7}
               style={styles.tabButton}
             >
-              <View
-                style={[
-                  styles.iconContainer,
-                  isActive && styles.activeIconWrapper,
-                ]}
-              >
-                {tab.id === "create" && isAgent ? (
-                  <View style={styles.createIconBg}>
-                    <IconComponent
-                      size={28}
-                      color={isActive ? activeColor : "rgba(37, 99, 235, 0.6)"}
-                    />
-                  </View>
-                ) : (
-                  <IconComponent
-                    size={24}
-                    color={isActive ? activeColor : inactiveColor}
-                  />
-                )}
-              </View>
+          <View
+  style={[
+    styles.iconContainer,
+    isActive && [
+      styles.activeIconWrapper, 
+      // Gives the active popped-up circle a clean white background
+      { backgroundColor: "#ffffff" } 
+    ],
+  ]}
+>
+  {tab.id === "create" && isAgent ? (
+    <View style={styles.createIconBg}>
+      <IconComponent
+        size={28}
+        // Forces black when active, otherwise uses your default blue tint
+        color={isActive ? "#000000" : "rgba(37, 99, 235, 0.6)"}
+      />
+    </View>
+  ) : (
+    <IconComponent
+      size={24}
+      // Forces black when active, otherwise uses your standard inactive gray
+      color={isActive ? "#000000" : inactiveColor}
+    />
+  )}
+</View>
 
               <Text
                 style={[
@@ -159,60 +165,65 @@ const BottomNav = ({ activeTab, setActiveTab, user }) => {
 const styles = StyleSheet.create({
   navContainer: {
     position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    paddingTop: 10,
-    paddingBottom: 25, // Extra padding for home indicator on iOS
+    bottom: 30,
+    left: 20,
+    right: 20,
+    borderRadius: 24, 
+    paddingVertical: 14,
+    paddingHorizontal: 10,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: -8 },
-    shadowOpacity: 0.08,
-    shadowRadius: 32,
-    elevation: 20,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.1,
+    shadowRadius: 20,
+    elevation: 15,
   },
   tabWrapper: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 4,
+    alignItems: "flex-end", 
   },
   tabButton: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    minWidth: 0,
+    height: 50, 
   },
   iconContainer: {
-    position: "relative",
-    marginBottom: 2,
+    marginBottom: 4,
+    justifyContent: "center",
+    alignItems: "center",
+    width: 44,
+    height: 44,
+    borderRadius: 22,
   },
   activeIconWrapper: {
-    transform: [{ scale: 1.1 }, { translateY: -2 }],
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    marginTop: -30, 
+    // Pronounced dark shadow so the white bubble pops off the navigation background
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.16,
+    shadowRadius: 6,
+    elevation: 8,
   },
   createIconBg: {
-    padding: 4,
-    borderRadius: 50,
-    backgroundColor: "rgba(37, 99, 235, 0.1)",
+    justifyContent: "center",
+    alignItems: "center",
   },
   tabLabel: {
-    fontSize: 8,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 1,
+    fontSize: 11,
+    fontWeight: "500",
+    textTransform: "capitalize",
+    marginTop: 2,
   },
   activeLabel: {
-    fontWeight: "900",
+    fontWeight: "600",
   },
-  inactiveLabel: {
-    opacity: 0.6,
-  },
+  inactiveLabel: {},
   activeDot: {
-    position: "absolute",
-    bottom: -6,
-    width: 4,
-    height: 4,
-    backgroundColor: "#2563eb",
-    borderRadius: 2,
+    display: "none", 
   },
 });
 
