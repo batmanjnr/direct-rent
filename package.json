@@ -21,7 +21,6 @@
     "expo-device": "~8.0.10",
     "expo-document-picker": "~14.0.8",
     "expo-file-system": "~19.0.22",
-    "expo-firebase-recaptcha": "^2.3.1",
     "expo-image-manipulator": "~14.0.8",
     "expo-image-picker": "~17.0.11",
     "expo-linking": "~8.0.12",
