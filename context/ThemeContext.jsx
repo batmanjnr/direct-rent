@@ -1,26 +1,17 @@
-import React, {
-  createContext,
-  useContext,
-  useEffect,
-  useState,
-  useRef,
-} from "react";
+import React, { createContext, useContext, useEffect, useState, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Appearance } from "react-native";
 
 const ThemeContext = createContext(undefined);
 const PREF_KEY = "themePref"; // values: 'system' | 'light' | 'dark'
 
 export const ThemeProvider = ({ children }) => {
-  const [preference, setPreference] = useState("system");
-  const [systemScheme, setSystemScheme] = useState(
-    Appearance.getColorScheme() || "light",
-  );
+  // Start with an explicit light theme by default (do not follow OS)
+  const [preference, setPreference] = useState("light");
   const [isLoading, setIsLoading] = useState(true);
   const mountedRef = useRef(true);
 
-  // derive the effective theme: if pref is 'system' follow systemScheme else use pref
-  const theme = preference === "system" ? systemScheme : preference;
+  // derive the effective theme: always use explicit preference
+  const theme = preference;
 
   // Load stored preference
   useEffect(() => {
@@ -28,9 +19,10 @@ export const ThemeProvider = ({ children }) => {
       try {
         const stored = await AsyncStorage.getItem(PREF_KEY);
         if (stored === "light" || stored === "dark" || stored === "system") {
+          // If a stored value exists, use it. Otherwise default to light.
           setPreference(stored);
         } else {
-          setPreference("system");
+          setPreference("light");
         }
       } catch (e) {
         console.error("Theme load failed:", e);
@@ -40,20 +32,14 @@ export const ThemeProvider = ({ children }) => {
     };
     loadPref();
 
-    const sub = Appearance.addChangeListener(({ colorScheme }) => {
-      const scheme = colorScheme || "light";
-      setSystemScheme(scheme);
-    });
+    // Do NOT subscribe to Appearance changes — app will not follow OS theme
 
     return () => {
       mountedRef.current = false;
-      try {
-        sub.remove();
-      } catch (e) {}
     };
   }, []);
 
-  // Persist preference whenever it changes (but avoid persisting system derived changes)
+  // Persist preference whenever it changes
   useEffect(() => {
     const save = async () => {
       try {
@@ -74,26 +60,22 @@ export const ThemeProvider = ({ children }) => {
     }
   };
 
-  // toggleTheme: if pref is 'system' toggle to opposite of current effective theme (becomes explicit)
-  // otherwise toggle between light and dark, but keep explicit preference
+  // toggleTheme: toggle between light and dark explicitly (ignore OS)
   const toggleTheme = () => {
-    const effective = preference === "system" ? systemScheme : preference;
-    const next = effective === "dark" ? "light" : "dark";
-    setPreference(next);
+    setPreference((prev) => (prev === "dark" ? "light" : "dark"));
   };
 
   // Whether the app is currently following the OS setting
   const isFollowingSystem = preference === "system";
 
-  // Helper to enable/disable following system: when enabling, set preference to 'system'
-  // when disabling, set explicit preference to the current system scheme so the toggle reflects OS state
+  // Helper to enable/disable following system: we intentionally disallow automatic following
   const setFollowSystem = (follow) => {
     if (follow) {
-      setPreference("system");
-    } else {
-      // set explicit to current system scheme so UI stays consistent
-      setPreference(systemScheme === "dark" ? "dark" : "light");
+      console.warn("Following system theme is disabled. Preference remains explicit.");
+      return;
     }
+    // if disabling follow, ensure an explicit theme is set
+    setPreference((prev) => (prev === "dark" ? "dark" : "light"));
   };
 
   return (
