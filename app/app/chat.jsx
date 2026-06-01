@@ -9,18 +9,10 @@ import {
   ActivityIndicator,
   Image,
   SafeAreaView,
-  Platform,
   RefreshControl,
   useColorScheme,
 } from "react-native";
-import {
-  MessageSquare,
-  Search,
-  Home,
-  Loader2,
-  Bell,
-  ChevronRight,
-} from "lucide-react-native";
+import { MessageSquare, Search, Home, Bell } from "lucide-react-native";
 import { db } from "../../lib/firebase";
 import {
   collection,
@@ -36,8 +28,9 @@ import VerificationBadge from "../../components/verificationbadge";
 import ChatModal from "../../components/chatmodal";
 import { useTheme } from "../../context/ThemeContext";
 import { useRouter } from "expo-router";
+import Skeleton from "../../components/ui/Skeleton";
 
-// Custom hook for live participant info
+// Custom hook for live participant info (Preserved)
 const useParticipant = (userId) => {
   const [participant, setParticipant] = useState(null);
 
@@ -63,43 +56,38 @@ const useParticipant = (userId) => {
   return participant;
 };
 
-// Avatar component with property overlay
+// Avatar component with dynamic background fix
 const ConversationAvatar = ({
   userId,
   initialImage,
   initialName,
   listingImage,
+  tokens,
 }) => {
   const participant = useParticipant(userId);
   const avatarUrl = participant?.avatarUrl || initialImage;
-  const { theme } = useTheme();
-  const scheme = useColorScheme();
-  const isDark = scheme === "dark" || theme === "dark";
-  const tokens = isDark
-    ? { cardBg: "#0b1220", placeholder: "#94a3b8" }
-    : { cardBg: "#f0f9ff", placeholder: "#0284c7" };
 
   return (
     <View style={styles.avatarContainer}>
       <View
         style={[
           styles.mainAvatar,
-          { backgroundColor: tokens.cardBg },
+          {
+            backgroundColor: avatarUrl ? "transparent" : tokens.badgeBg,
+            borderColor: tokens.border,
+          },
         ]}
       >
         {avatarUrl ? (
           <Image source={{ uri: avatarUrl }} style={styles.fullImage} />
         ) : (
-          <Text style={[styles.avatarPlaceholder, { color: tokens.placeholder }]}> 
+          <Text style={[styles.avatarPlaceholder, { color: tokens.accent }]}>
             {(participant?.name || initialName || "?").charAt(0)}
           </Text>
         )}
       </View>
       <View
-        style={[
-          styles.listingOverlay,
-          { borderColor: isDark ? "#0b1220" : "#fff" },
-        ]}
+        style={[styles.listingOverlay, { borderColor: tokens.avatarStroke }]}
       >
         <Image source={{ uri: listingImage }} style={styles.fullImage} />
       </View>
@@ -113,13 +101,8 @@ const ConversationRow = ({
   onClick,
   getTimeAgo,
   getStatusConfig,
+  tokens,
 }) => {
-  const { theme } = useTheme();
-  const scheme = useColorScheme();
-  const isDark = scheme === "dark" || theme === "dark";
-  const tokens = isDark
-    ? { bg: "#0b1220", border: "#1e293b", text: "#fff", subtext: "#94a3b8", badge: "#C5A46E" }
-    : { bg: "#fff", border: "#f1f5f9", text: "#0f172a", subtext: "#64748b", badge: "#0284c7" };
   const participantId = user?.role === "tenant" ? conv.agentId : conv.tenantId;
   const participant = useParticipant(participantId);
 
@@ -128,14 +111,14 @@ const ConversationRow = ({
     (user?.role === "tenant" ? conv.agentName : conv.tenantName);
   const unreadCount =
     user?.role === "tenant" ? conv.unreadCount_tenant : conv.unreadCount_agent;
-  const status = getStatusConfig(conv.status || "inquiry");
 
   return (
     <TouchableOpacity
       onPress={onClick}
+      activeOpacity={0.85}
       style={[
         styles.row,
-        { backgroundColor: tokens.bg, borderColor: tokens.border },
+        { backgroundColor: tokens.cardBg, borderColor: tokens.border },
       ]}
     >
       <ConversationAvatar
@@ -145,16 +128,14 @@ const ConversationRow = ({
         }
         initialName={displayName}
         listingImage={conv.listingImage}
+        tokens={tokens}
       />
 
       <View style={styles.rowContent}>
         <View style={styles.rowHeader}>
           <View style={styles.nameSection}>
             <Text
-              style={[
-                styles.displayName,
-                { color: tokens.text },
-              ]}
+              style={[styles.displayName, { color: tokens.textMain }]}
               numberOfLines={1}
             >
               {displayName}
@@ -167,28 +148,28 @@ const ConversationRow = ({
               />
             )}
           </View>
-          <Text
-            style={[styles.timeText, { color: tokens.subtext }]}
-          >
+          <Text style={[styles.timeText, { color: tokens.textSubtle }]}>
             {getTimeAgo(conv.updatedAt)}
           </Text>
         </View>
 
         <View style={styles.statusRow}>
-          <View style={[styles.statusTag, { backgroundColor: status.bgColor }]}> 
-            <Text style={[styles.statusText, { color: status.textColor }]}>
-              {status.label}
+          <View
+            style={[
+              styles.statusTag,
+              { backgroundColor: tokens.badgeBg, borderColor: tokens.border },
+            ]}
+          >
+            <Text style={[styles.statusText, { color: tokens.accent }]}>
+              {conv.status ? conv.status.replace("_", " ") : "Inquiry"}
             </Text>
           </View>
         </View>
 
         <View style={styles.listingRow}>
-          <Home size={10} color={isDark ? "#94a3b8" : "#94a3b8"} />
+          <Home size={10} color={tokens.accent} />
           <Text
-            style={[
-              styles.listingTitle,
-              { color: tokens.subtext },
-            ]}
+            style={[styles.listingTitle, { color: tokens.textSubtle }]}
             numberOfLines={1}
           >
             {conv.listingTitle}
@@ -196,10 +177,7 @@ const ConversationRow = ({
         </View>
 
         <Text
-          style={[
-            styles.lastMessage,
-            { color: tokens.subtext },
-          ]}
+          style={[styles.lastMessage, { color: tokens.textSubtle }]}
           numberOfLines={1}
         >
           {conv.lastMessage}
@@ -207,7 +185,7 @@ const ConversationRow = ({
       </View>
 
       {unreadCount > 0 && (
-        <View style={[styles.unreadBadge, { backgroundColor: tokens.badge }]}>
+        <View style={[styles.unreadBadge, { backgroundColor: tokens.accent }]}>
           <Text style={styles.unreadText}>{unreadCount}</Text>
         </View>
       )}
@@ -216,17 +194,43 @@ const ConversationRow = ({
 };
 
 const Inbox = () => {
-  const { user, setActiveTab } = useAuth();
+  const { user } = useAuth();
   const { theme } = useTheme();
   const scheme = useColorScheme();
   const isDark = scheme === "dark" || theme === "dark";
-   const [conversations, setConversations] = useState([]);
-   const [loading, setLoading] = useState(true);
-   const [selectedConv, setSelectedConv] = useState(null);
-   const [searchQuery, setSearchQuery] = useState("");
-   const [refreshing, setRefreshing] = useState(false);
-   const [unread, setUnread] = useState(0);
-   const router = useRouter();
+
+  const [conversations, setConversations] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedConv, setSelectedConv] = useState(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [unread, setUnread] = useState(0);
+  const router = useRouter();
+
+  // Unified color palette matching DirectRent colors (No blurry white layers)
+  const tokens = isDark
+    ? {
+        canvas: "#0a0e1a",
+        headerBg: "#0a0e1a",
+        cardBg: "#111827", // Pure clean dark surface
+        textMain: "#ffffff",
+        textSubtle: "#94a3b8",
+        border: "rgba(255, 255, 255, 0.08)",
+        badgeBg: "#1f2937",
+        accent: "#3b82f6", // Primary Accent Blue
+        avatarStroke: "#0a0e1a",
+      }
+    : {
+        canvas: "#f1f5f9",
+        headerBg: "#ffffff",
+        cardBg: "#ffffff", // Pure clean light surface
+        textMain: "#0f172a",
+        textSubtle: "#475569",
+        border: "rgba(15, 23, 42, 0.06)",
+        badgeBg: "#f8fafc",
+        accent: "#2563eb", // Primary Accent Blue
+        avatarStroke: "#f1f5f9",
+      };
 
   useEffect(() => {
     if (!user) return;
@@ -281,34 +285,6 @@ const Inbox = () => {
     }
   };
 
-  const getStatusConfig = (status) => {
-    const configs = {
-      contract_requested: {
-        label: "Requested",
-        textColor: "#0284c7",
-        bgColor: "#f0f9ff",
-      },
-      contract_sent: {
-        label: "Review",
-        textColor: "#d97706",
-        bgColor: "#fffbeb",
-      },
-      paid: { label: "Paid", textColor: "#059669", bgColor: "#ecfdf5" },
-      completed: {
-        label: "Completed",
-        textColor: "#64748b",
-        bgColor: "#f8fafc",
-      },
-    };
-    return (
-      configs[status] || {
-        label: "Inquiry",
-        textColor: "#64748b",
-        bgColor: "#f8fafc",
-      }
-    );
-  };
-
   const getTimeAgo = (timestamp) => {
     if (!timestamp) return "";
     const seconds = Math.floor((new Date() - timestamp.toDate()) / 1000);
@@ -325,80 +301,90 @@ const Inbox = () => {
 
   if (loading)
     return (
-      <View style={styles.centered}>
-        <ActivityIndicator color="#0284c7" />
-      </View>
+      <SafeAreaView
+        style={[styles.safeArea, { backgroundColor: tokens.canvas }]}
+      >
+        <Skeleton type="inbox" isDark={isDark} />
+      </SafeAreaView>
     );
 
   return (
-    <SafeAreaView
-      style={[
-        styles.safeArea,
-        { backgroundColor: isDark ? "#020617" : "#fff" },
-      ]}
-    >
-      <View style={styles.header}>
-        <Text
-          style={[styles.headerTitle, { color: isDark ? "#fff" : "#0f172a" }]}
-        >
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: tokens.canvas }]}>
+      {/* Navigation Header */}
+      <View
+        style={[
+          styles.header,
+          {
+            backgroundColor: tokens.headerBg,
+            borderBottomColor: tokens.border,
+          },
+        ]}
+      >
+        <Text style={[styles.headerTitle, { color: tokens.textMain }]}>
           Messages
         </Text>
         <TouchableOpacity
           onPress={() => router.push("/app/notification")}
-          style={{ padding: 8 }}
+          style={[styles.headerBtn, { borderColor: tokens.border }]}
         >
-          <Bell size={18} color={isDark ? "#fff" : "#0f172a"} />
+          <Bell size={18} color={tokens.textMain} />
           {unread > 0 && (
-            <View style={[styles.unreadBadge, { right: -2, top: 6 }]} />
+            <View style={[styles.notifDot, { borderColor: tokens.canvas }]} />
           )}
         </TouchableOpacity>
       </View>
 
-      <View style={styles.searchContainer}>
-        <Search
-          size={16}
-          color={isDark ? "#94a3b8" : "#94a3b8"}
-           style={styles.searchIcon}
-         />
-         <TextInput
-           placeholder="Search conversations..."
-           placeholderTextColor={isDark ? "#64748b" : "#94a3b8"}
-           style={[
-             styles.searchInput,
-             {
-               backgroundColor: isDark ? "#0b1220" : "#f8fafc",
-               color: isDark ? "#fff" : "#0f172a",
-             },
-           ]}
-           value={searchQuery}
-           onChangeText={setSearchQuery}
-         />
-       </View>
+      {/* Modern Search Field */}
+      <View style={styles.searchWrapper}>
+        <View
+          style={[
+            styles.searchContainer,
+            { backgroundColor: tokens.cardBg, borderColor: tokens.border },
+          ]}
+        >
+          <Search
+            size={16}
+            color={tokens.textSubtle}
+            style={styles.searchIcon}
+          />
+          <TextInput
+            placeholder="Search conversations..."
+            placeholderTextColor={tokens.textSubtle}
+            style={[styles.searchInput, { color: tokens.textMain }]}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+        </View>
+      </View>
 
+      {/* Main Inbox Conversation List */}
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
+        showsVerticalScrollIndicator={false}
         renderItem={({ item }) => (
           <ConversationRow
             conv={item}
             user={user}
             onClick={() => setSelectedConv(item)}
             getTimeAgo={getTimeAgo}
-            getStatusConfig={getStatusConfig}
+            tokens={tokens}
           />
         )}
         onRefresh={handleRefresh}
         refreshing={refreshing}
         ListEmptyComponent={
           <View style={styles.emptyState}>
-            <MessageSquare size={48} color={isDark ? "#334155" : "#e2e8f0"} />
-            <Text
+            <View
               style={[
-                styles.emptyTitle,
-                { color: isDark ? "#94a3b8" : "#0f172a" },
+                styles.emptyIconCircle,
+                { backgroundColor: tokens.cardBg, borderColor: tokens.border },
               ]}
             >
+              <MessageSquare size={28} color={tokens.textSubtle} />
+            </View>
+            <Text style={[styles.emptyTitle, { color: tokens.textMain }]}>
               Your inbox is clear
             </Text>
           </View>
@@ -429,57 +415,87 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
-    padding: 20,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
     alignItems: "center",
+    borderBottomWidth: 1,
   },
-  headerTitle: { fontSize: 24, fontWeight: "900", color: "#0f172a" },
+  headerTitle: { fontSize: 24, fontWeight: "800", letterSpacing: -0.5 },
+  headerBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 100,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+  },
+  notifDot: {
+    position: "absolute",
+    top: 2,
+    right: 2,
+    width: 8,
+    height: 8,
+    backgroundColor: "#ef4444",
+    borderRadius: 100,
+    borderWidth: 1.5,
+  },
+  searchWrapper: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 8,
+  },
   searchContainer: {
-    marginHorizontal: 20,
-    marginBottom: 20,
-    position: "relative",
+    height: 48,
+    borderRadius: 100,
+    borderWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
   },
-  searchIcon: { position: "absolute", left: 15, top: 15, zIndex: 1 },
+  searchIcon: { marginRight: 10 },
   searchInput: {
-    backgroundColor: "#f8fafc",
-    padding: 12,
-    paddingLeft: 45,
-    borderRadius: 12,
+    flex: 1,
     fontSize: 14,
+    height: "100%",
+    fontWeight: "500",
   },
-  list: { paddingHorizontal: 20, paddingBottom: 100 },
+  list: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 8 },
   row: {
     flexDirection: "row",
-    backgroundColor: "#fff",
-    padding: 12,
-    borderRadius: 16,
-    marginBottom: 12,
+    borderRadius: 24,
     borderWidth: 1,
-    borderColor: "#f1f5f9",
+    padding: 14,
+    alignItems: "center",
+    marginBottom: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.02,
+    shadowRadius: 8,
+    elevation: 2,
   },
-  avatarContainer: { position: "relative", marginRight: 15 },
+  avatarContainer: { position: "relative", marginRight: 14 },
   mainAvatar: {
-    width: 55,
-    height: 55,
-    borderRadius: 28,
-    backgroundColor: "#f0f9ff",
+    width: 52,
+    height: 52,
+    borderRadius: 100,
     overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 1,
   },
-  avatarPlaceholder: { fontSize: 20, fontWeight: "bold", color: "#0284c7" },
+  avatarPlaceholder: { fontSize: 18, fontWeight: "700" },
   listingOverlay: {
     position: "absolute",
     bottom: -2,
     right: -2,
-    width: 24,
-    height: 24,
+    width: 22,
+    height: 22,
     borderRadius: 8,
     borderWidth: 2,
-    borderColor: "#fff",
     overflow: "hidden",
   },
   fullImage: { width: "100%", height: "100%" },
-  rowContent: { flex: 1 },
+  rowContent: { flex: 1, marginRight: 8 },
   rowHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -488,47 +504,59 @@ const styles = StyleSheet.create({
   },
   nameSection: { flexDirection: "row", alignItems: "center", flex: 1 },
   displayName: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: "#0f172a",
-    marginRight: 5,
+    fontSize: 15,
+    fontWeight: "700",
+    marginRight: 6,
+    letterSpacing: -0.2,
   },
-  timeText: { fontSize: 10, color: "#94a3b8", fontWeight: "bold" },
-  statusRow: { marginBottom: 4 },
+  vBadge: { marginTop: 1 },
+  timeText: { fontSize: 11, fontWeight: "600" },
+  statusRow: { marginBottom: 6 },
   statusTag: {
     alignSelf: "flex-start",
     paddingHorizontal: 8,
     paddingVertical: 2,
-    borderRadius: 6,
+    borderRadius: 100,
+    borderWidth: 0.5,
   },
-  statusText: { fontSize: 9, fontWeight: "900", textTransform: "uppercase" },
-  listingRow: { flexDirection: "row", alignItems: "center", marginBottom: 4 },
+  statusText: {
+    fontSize: 9,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
+  },
+  listingRow: { flexDirection: "row", alignItems: "center", marginBottom: 3 },
   listingTitle: {
     fontSize: 10,
-    fontWeight: "900",
-    color: "#64748b",
+    fontWeight: "700",
     marginLeft: 4,
     textTransform: "uppercase",
+    letterSpacing: 0.2,
   },
-  lastMessage: { fontSize: 13, color: "#64748b" },
+  lastMessage: { fontSize: 13, fontWeight: "400" },
   unreadBadge: {
-    backgroundColor: "#0284c7",
     minWidth: 20,
     height: 20,
-    borderRadius: 10,
+    borderRadius: 100,
     alignItems: "center",
     justifyContent: "center",
-    position: "absolute",
-    right: 12,
-    top: "45%",
+    paddingHorizontal: 5,
   },
-  unreadText: { color: "#fff", fontSize: 10, fontWeight: "bold" },
-  emptyState: { alignItems: "center", marginTop: 100 },
+  unreadText: { color: "#fff", fontSize: 10, fontWeight: "800" },
+  emptyState: { alignItems: "center", paddingTop: 80 },
+  emptyIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 100,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
+    borderWidth: 1,
+  },
   emptyTitle: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#0f172a",
-    marginTop: 10,
+    fontSize: 16,
+    fontWeight: "700",
+    letterSpacing: -0.1,
   },
 });
 

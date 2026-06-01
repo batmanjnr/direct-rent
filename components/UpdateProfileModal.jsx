@@ -17,9 +17,10 @@ import { useTheme } from "../context/ThemeContext";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system";
 import * as ImageManipulator from "expo-image-manipulator";
-import { BlurView } from 'expo-blur';
-// import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-// import { storage } from "../lib/firebase";
+import { BlurView } from "expo-blur";
+import { uriToBlob } from "../lib/uriToBlob";
+import { storage } from "../lib/firebase";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 const UpdateProfileModal = ({ visible, onClose }) => {
   const { user, updateProfile } = useAuth();
@@ -40,10 +41,15 @@ const UpdateProfileModal = ({ visible, onClose }) => {
   const [gender, setGender] = useState(user?.gender || "");
   const [age, setAge] = useState(user?.age ? String(user.age) : "");
   const [loading, setLoading] = useState(false);
+  const [successToastVisible, setSuccessToastVisible] = useState(false);
+
+  const showSuccessToast = (msg = "Profile picture uploaded successfully") => {
+    setSuccessToastVisible(true);
+    setTimeout(() => setSuccessToastVisible(false), 3000);
+  };
 
   const pickAndUpload = async () => {
     try {
-      // Request permission and handle different SDK responses
       const permission =
         await ImagePicker.requestMediaLibraryPermissionsAsync();
       const allowed =
@@ -64,122 +70,106 @@ const UpdateProfileModal = ({ visible, onClose }) => {
         quality: 0.7,
       });
 
-      // Normalize results across SDK versions
-      // Newer API: { canceled: boolean, assets: [{ uri, ... }] }
-      // Older API: { cancelled: boolean, uri: string }
-      if (res == null) return;
+      if (!res) return;
       if (res.canceled === true || res.cancelled === true) return;
 
       let uri = null;
       if (Array.isArray(res.assets) && res.assets.length > 0)
         uri = res.assets[0].uri;
       else if (typeof res.uri === "string") uri = res.uri;
-
-      if (!uri) {
-        // user likely cancelled or returned unknown shape
-        return;
-      }
+      if (!uri) return;
 
       setAvatarUploading(true);
-      // let blob = null;
 
-      // Try fetch first (works for file:// and http(s) URIs)
-      // try {
-      //   const r = await fetch(uri);
-      //   blob = await r.blob();
-      // } catch (e) {
-      //   console.warn(
-      //     "[UpdateProfileModal] fetch(uri) failed, attempting FileSystem base64 fallback",
-      //     e
-      //   );
-      //   // Fallback: read file as base64 and convert to blob via data URL
-      //   try {
-      //     const b64 = await FileSystem.readAsStringAsync(uri, {
-      //       encoding: FileSystem.EncodingType.Base64,
-      //     });
-      //     const dataUrl = `data:image/jpeg;base64,${b64}`;
-      //     const resp = await fetch(dataUrl);
-      //     blob = await resp.blob();
-      //   } catch (fsErr) {
-      //     console.error("[UpdateProfileModal] base64 fallback failed", fsErr);
-      //     throw fsErr;
-      //   }
-      // }
+      // Manipulate image to resize/compress and produce a local uri + base64
+      const manipResult = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ resize: { width: 512 } }],
+        {
+          compress: 0.6,
+          format: ImageManipulator.SaveFormat.JPEG,
+          base64: true,
+        },
+      );
 
-      // if (!blob) throw new Error("Could not obtain image data");
+      if (!manipResult) throw new Error("Image processing failed");
 
-      // Determine mime type for upload metadata
-      // let mimeType = blob.type || null;
-      // try {
-      //   if (!mimeType && typeof uri === "string") {
-      //     if (uri.endsWith(".png")) mimeType = "image/png";
-      //     else if (uri.endsWith(".webp")) mimeType = "image/webp";
-      //     else mimeType = "image/jpeg";
-      //   }
-      // } catch (mErr) {
-      //   mimeType = mimeType || "image/jpeg";
-      // }
+      const mimeType = "image/jpeg";
+      let uploadedUrl = null;
+      const remotePath = `avatars/${user.id}_${Date.now()}.jpg`;
 
-      // const storageRef = ref(storage, `avatars/${user.id}_${Date.now()}.jpg`);
-      // console.debug(
-      //   "[UpdateProfileModal] uploading avatar, mimeType=",
-      //   mimeType,
-      //   "uri=",
-      //   uri
-      // );
-      // await uploadBytes(storageRef, blob, { contentType: mimeType });
-      // const url = await getDownloadURL(storageRef);
-      // await updateProfile({ avatarUrl: url });
-      // reflect immediately
-
-      // Use ImageManipulator to resize & compress and return base64
+      // Primary upload approach: fetch the manipulated uri and upload blob
       try {
-        // target max width to reduce size; quality 0.6 to keep under Firestore limits
-        const manipResult = await ImageManipulator.manipulateAsync(
-          uri,
-          [{ resize: { width: 512 } }],
-          {
-            compress: 0.6,
-            format: ImageManipulator.SaveFormat.JPEG,
-            base64: true,
-          },
+        const fetchUri = manipResult.uri || uri;
+        console.log(
+          "[UpdateProfileModal] attempting fetch upload for",
+          fetchUri,
+          "->",
+          remotePath,
         );
-
-        if (!manipResult || !manipResult.base64) {
-          throw new Error("Image processing failed");
-        }
-
-        const b64 = manipResult.base64; // no data: prefix
-        const mimeType = "image/jpeg";
-
-        // WARNING: Firestore has a 1 MiB document size limit. Keep avatars small (recommended under ~200KB).
-        // Validate size before writing
-        const estimateBytes = Math.ceil((b64.length * 3) / 4);
-        console.debug(
-          "[UpdateProfileModal] avatar base64 approx bytes=",
-          estimateBytes,
+        const resp = await fetch(fetchUri);
+        const blob = await resp.blob();
+        const storageRef = ref(storage, remotePath);
+        await uploadBytes(storageRef, blob, { contentType: mimeType });
+        uploadedUrl = await getDownloadURL(storageRef);
+        console.log("[UpdateProfileModal] upload success", {
+          remotePath,
+          uploadedUrl,
+        });
+      } catch (errFetch) {
+        console.warn(
+          "[UpdateProfileModal] fetch upload failed, falling back to uriToBlob",
+          errFetch,
         );
-        if (estimateBytes > 800 * 1024) {
-          Alert.alert(
-            "Image Too Large",
-            "Please choose a smaller image. Processed image exceeds 800KB limit.",
+        // Fallback to uriToBlob (handles dev client / special URI schemes)
+        try {
+          const blob = await uriToBlob(manipResult.uri || uri, mimeType);
+          console.log(
+            "[UpdateProfileModal] obtained blob via uriToBlob, uploading to",
+            remotePath,
           );
-          return;
+          const storageRef = ref(storage, remotePath);
+          await uploadBytes(storageRef, blob, { contentType: mimeType });
+          uploadedUrl = await getDownloadURL(storageRef);
+          console.log("[UpdateProfileModal] upload success (fallback)", {
+            remotePath,
+            uploadedUrl,
+          });
+        } catch (errFallback) {
+          console.warn(
+            "[UpdateProfileModal] storage upload failed (both fetch and uriToBlob)",
+            errFetch,
+            errFallback,
+          );
+          Alert.alert(
+            "Upload failed",
+            `Storage upload failed:\n${String(errFetch)}\n${String(errFallback)}`,
+          );
         }
+      }
 
-        // Persist into Firestore via the existing updateProfile helper
-        // Update Firestore but keep modal open. Reflect preview locally immediately.
+      if (uploadedUrl) {
+        setAvatarPreview(uploadedUrl);
+        await updateProfile({ avatarUrl: uploadedUrl });
+        // Show styled in-app success toast instead of system alert
+        showSuccessToast();
+        console.log("[UpdateProfileModal] upload succeeded", {
+          remotePath,
+          uploadedUrl,
+        });
+      } else {
+        // Fallback: save base64 into profile (existing behavior)
+        const b64 = manipResult.base64;
         const dataUrl = `data:${mimeType};base64,${b64}`;
         setAvatarPreview(dataUrl);
         await updateProfile({ avatarBase64: b64, avatarMime: mimeType });
-        Alert.alert("Saved", "Profile photo updated.");
-      } catch (procErr) {
-        console.error("[UpdateProfileModal] image manipulate failed", procErr);
-        throw procErr;
+        Alert.alert(
+          "Saved (local)",
+          "Profile photo saved to profile (fallback).",
+        );
       }
     } catch (err) {
       console.warn("avatar upload failed", err);
-      // If the user simply cancelled selection we already returned earlier; any error here is real
       Alert.alert("Failed to upload avatar", err?.message || String(err));
     } finally {
       setAvatarUploading(false);
@@ -207,200 +197,240 @@ const UpdateProfileModal = ({ visible, onClose }) => {
   };
 
   return (
-  <Modal visible={visible} animationType="slide" transparent>
-    <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      style={styles.overlay}
-    >
-   <View 
-  style={[
-    styles.outerContainer, 
-    { 
-      borderColor: isDark ? "rgba(255, 255, 255, 0.09)" : "rgba(255, 255, 255, 0.6)",
-      shadowOpacity: isDark ? 0.3 : 0.1 
-    }
-  ]}
->
-  {/* Real Native Frosted Glass Surface Layer */}
-  <BlurView 
-    intensity={isDark ? 30 : 75} // Increased intensity on light mode to give that rich frosted texture
-    tint={isDark ? "dark" : "light"} 
-    style={StyleSheet.absoluteFill} 
-  />
-  
-  {/* Base Tint Wash Container */}
-  <View 
-    style={[
-      styles.container, 
-      { 
-        backgroundColor: isDark ? "rgba(30, 41, 59, 0.25)" : "rgba(255, 255, 255, 0.45)" 
-      }
-    ]}
-  >
-          <Text style={[styles.title, { color: isDark ? "#fff" : "#0f172a" }]}>
-            Edit Profile
-          </Text>
+    <Modal visible={visible} animationType="slide" transparent>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={styles.overlay}
+      >
+        <View
+          style={[
+            styles.outerContainer,
+            {
+              borderColor: isDark
+                ? "rgba(255, 255, 255, 0.09)"
+                : "rgba(255, 255, 255, 0.6)",
+              shadowOpacity: isDark ? 0.3 : 0.1,
+            },
+          ]}
+        >
+          {/* Real Native Frosted Glass Surface Layer */}
+          <BlurView
+            intensity={isDark ? 30 : 75} // Increased intensity on light mode to give that rich frosted texture
+            tint={isDark ? "dark" : "light"}
+            style={StyleSheet.absoluteFill}
+          />
 
-          <TouchableOpacity
-            onPress={pickAndUpload}
-            style={{ marginBottom: 16, alignItems: "center" }}
+          {/* Base Tint Wash Container */}
+          <View
+            style={[
+              styles.container,
+              {
+                backgroundColor: isDark
+                  ? "rgba(30, 41, 59, 0.25)"
+                  : "rgba(255, 255, 255, 0.45)",
+              },
+            ]}
           >
-            {avatarPreview ? (
-              <Image
-                source={{ uri: avatarPreview }}
-                style={{
-                  width: 96,
-                  height: 96,
-                  borderRadius: 48,
-                  marginBottom: 8,
-                  borderWidth: 1.5,
-                  borderColor: "rgba(255, 255, 255, 0.4)", // White-glass glowing ring highlight
-                }}
-              />
-            ) : (
-              <View
-                style={{
-                  width: 96,
-                  height: 96,
-                  borderRadius: 48,
-                  backgroundColor: isDark ? "rgba(255, 255, 255, 0.05)" : "rgba(15, 23, 42, 0.04)",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  marginBottom: 8,
-                  borderWidth: 1,
-                  borderColor: "rgba(255, 255, 255, 0.1)",
-                }}
+            <Text
+              style={[styles.title, { color: isDark ? "#fff" : "#0f172a" }]}
+            >
+              Edit Profile
+            </Text>
+
+            <TouchableOpacity
+              onPress={pickAndUpload}
+              style={{ marginBottom: 16, alignItems: "center" }}
+            >
+              {avatarPreview ? (
+                <Image
+                  source={{ uri: avatarPreview }}
+                  style={{
+                    width: 96,
+                    height: 96,
+                    borderRadius: 48,
+                    marginBottom: 8,
+                    borderWidth: 1.5,
+                    borderColor: "rgba(255, 255, 255, 0.4)", // White-glass glowing ring highlight
+                  }}
+                />
+              ) : (
+                <View
+                  style={{
+                    width: 96,
+                    height: 96,
+                    borderRadius: 48,
+                    backgroundColor: isDark
+                      ? "rgba(255, 255, 255, 0.05)"
+                      : "rgba(15, 23, 42, 0.04)",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    marginBottom: 8,
+                    borderWidth: 1,
+                    borderColor: "rgba(255, 255, 255, 0.1)",
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: isDark ? "#fff" : "#0f172a",
+                      fontWeight: "600",
+                    }}
+                  >
+                    Photo
+                  </Text>
+                </View>
+              )}
+              {avatarUploading ? (
+                <ActivityIndicator
+                  size="small"
+                  color={isDark ? "#fff" : "#2563eb"}
+                />
+              ) : (
+                <Text
+                  style={{
+                    color: isDark ? "#94a3b8" : "#475569",
+                    marginBottom: 6,
+                    fontSize: 13,
+                    fontWeight: "600",
+                  }}
+                >
+                  Tap to change photo
+                </Text>
+              )}
+            </TouchableOpacity>
+
+            <TextInput
+              placeholder="First name"
+              placeholderTextColor={isDark ? "#64748b" : "#94a3b8"}
+              value={firstName}
+              onChangeText={setFirstName}
+              style={[
+                styles.input,
+                {
+                  backgroundColor: isDark
+                    ? "rgba(255, 255, 255, 0.03)"
+                    : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
+                  color: isDark ? "#fff" : "#0f172a",
+                },
+              ]}
+            />
+
+            <TextInput
+              placeholder="Last name"
+              placeholderTextColor={isDark ? "#64748b" : "#94a3b8"}
+              value={lastName}
+              onChangeText={setLastName}
+              style={[
+                styles.input,
+                {
+                  backgroundColor: isDark
+                    ? "rgba(255, 255, 255, 0.03)"
+                    : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
+                  color: isDark ? "#fff" : "#0f172a",
+                },
+              ]}
+            />
+
+            <TextInput
+              placeholder="Phone number"
+              placeholderTextColor={isDark ? "#64748b" : "#94a3b8"}
+              value={phoneNumber}
+              onChangeText={setPhoneNumber}
+              keyboardType="phone-pad"
+              style={[
+                styles.input,
+                {
+                  backgroundColor: isDark
+                    ? "rgba(255, 255, 255, 0.03)"
+                    : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
+                  color: isDark ? "#fff" : "#0f172a",
+                },
+              ]}
+            />
+
+            <TextInput
+              placeholder="Gender"
+              placeholderTextColor={isDark ? "#64748b" : "#94a3b8"}
+              value={gender}
+              onChangeText={setGender}
+              style={[
+                styles.input,
+                {
+                  backgroundColor: isDark
+                    ? "rgba(255, 255, 255, 0.03)"
+                    : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
+                  color: isDark ? "#fff" : "#0f172a",
+                },
+              ]}
+            />
+
+            <TextInput
+              placeholder="Age"
+              placeholderTextColor={isDark ? "#64748b" : "#94a3b8"}
+              value={age}
+              onChangeText={setAge}
+              keyboardType="numeric"
+              style={[
+                styles.input,
+                {
+                  backgroundColor: isDark
+                    ? "rgba(255, 255, 255, 0.03)"
+                    : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
+                  color: isDark ? "#fff" : "#0f172a",
+                },
+              ]}
+            />
+
+            <View style={styles.actionsRow}>
+              <TouchableOpacity
+                onPress={onClose}
+                style={[
+                  styles.btn,
+                  {
+                    backgroundColor: isDark
+                      ? "rgba(255, 255, 255, 0.08)"
+                      : "rgba(15, 23, 42, 0.05)",
+                  },
+                ]}
               >
-                <Text style={{ color: isDark ? "#fff" : "#0f172a", fontWeight: "600" }}>
-                  Photo
+                <Text
+                  style={[
+                    styles.btnText,
+                    { color: isDark ? "#cbd5e1" : "#0f172a" },
+                  ]}
+                >
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleSave}
+                style={[
+                  styles.btn,
+                  { backgroundColor: isDark ? "#3b82f6" : "#2563eb" },
+                ]}
+                disabled={loading}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.btnText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {/* Success toast for avatar upload */}
+            {successToastVisible && (
+              <View style={styles.toast}>
+                <Text style={styles.toastText}>
+                  Profile picture uploaded successfully
                 </Text>
               </View>
             )}
-            {avatarUploading ? (
-              <ActivityIndicator size="small" color={isDark ? "#fff" : "#2563eb"} />
-            ) : (
-              <Text
-                style={{
-                  color: isDark ? "#94a3b8" : "#475569",
-                  marginBottom: 6,
-                  fontSize: 13,
-                  fontWeight: "600",
-                }}
-              >
-                Tap to change photo
-              </Text>
-            )}
-          </TouchableOpacity>
-
-          <TextInput
-            placeholder="First name"
-            placeholderTextColor={isDark ? "#64748b" : "#94a3b8"}
-            value={firstName}
-            onChangeText={setFirstName}
-            style={[
-  styles.input,
-  {
-    backgroundColor: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
-    color: isDark ? "#fff" : "#0f172a",
-  },
-]}
-          />
-
-          <TextInput
-            placeholder="Last name"
-            placeholderTextColor={isDark ? "#64748b" : "#94a3b8"}
-            value={lastName}
-            onChangeText={setLastName}
-            style={[
-  styles.input,
-  {
-    backgroundColor: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
-    color: isDark ? "#fff" : "#0f172a",
-  },
-]}
-          />
-
-          <TextInput
-            placeholder="Phone number"
-            placeholderTextColor={isDark ? "#64748b" : "#94a3b8"}
-            value={phoneNumber}
-            onChangeText={setPhoneNumber}
-            keyboardType="phone-pad"
-            style={[
-  styles.input,
-  {
-    backgroundColor: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
-    color: isDark ? "#fff" : "#0f172a",
-  },
-]}
-          />
-
-          <TextInput
-            placeholder="Gender"
-            placeholderTextColor={isDark ? "#64748b" : "#94a3b8"}
-            value={gender}
-            onChangeText={setGender}
-            style={[
-  styles.input,
-  {
-    backgroundColor: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
-    color: isDark ? "#fff" : "#0f172a",
-  },
-]}
-          />
-
-          <TextInput
-            placeholder="Age"
-            placeholderTextColor={isDark ? "#64748b" : "#94a3b8"}
-            value={age}
-            onChangeText={setAge}
-            keyboardType="numeric"
-            style={[
-  styles.input,
-  {
-    backgroundColor: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.03)", // Soft dark track overlay on light theme
-    color: isDark ? "#fff" : "#0f172a",
-  },
-]}
-          />
-
-          <View style={styles.actionsRow}>
-            <TouchableOpacity
-              onPress={onClose}
-              style={[
-                styles.btn,
-                { backgroundColor: isDark ? "rgba(255, 255, 255, 0.08)" : "rgba(15, 23, 42, 0.05)" },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.btnText,
-                  { color: isDark ? "#cbd5e1" : "#0f172a" },
-                ]}
-              >
-                Cancel
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={handleSave}
-              style={[
-                styles.btn,
-                { backgroundColor: isDark ? "#3b82f6" : "#2563eb" },
-              ]}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.btnText}>Save</Text>
-              )}
-            </TouchableOpacity>
           </View>
         </View>
-      </View>
-    </KeyboardAvoidingView>
-  </Modal>
-);};
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+};
 
 const styles = StyleSheet.create({
   overlay: {
@@ -409,31 +439,30 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: "rgba(3, 7, 18, 0.65)", // Dark cinematic overlay to make glass modal stand out
   },
-outerContainer: {
-  width: "90%",
-  borderRadius: 36, 
-  overflow: "hidden", 
-  borderWidth: 1,
-  shadowColor: "#000",
-  shadowOffset: { width: 0, height: 24 },
-  shadowRadius: 32,
-  elevation: 8,
-},
-container: { 
-  width: "100%", 
-  padding: 24, 
-},
-// ... keep everything else identical below
-  title: { 
-    fontSize: 22, 
-    fontWeight: "700", 
+  outerContainer: {
+    width: "90%",
+    borderRadius: 36,
+    overflow: "hidden",
+    borderWidth: 1,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 24 },
+    shadowRadius: 32,
+    elevation: 8,
+  },
+  container: {
+    width: "100%",
+    padding: 24,
+  },
+  title: {
+    fontSize: 22,
+    fontWeight: "700",
     marginBottom: 20,
     letterSpacing: -0.4,
-    textAlign: "center"
+    textAlign: "center",
   },
-  input: { 
-    paddingVertical: 16, 
-    paddingHorizontal: 20, 
+  input: {
+    paddingVertical: 16,
+    paddingHorizontal: 20,
     borderRadius: 100, // Uniform capsule layout fields matching main menu bar style
     marginBottom: 12,
     fontSize: 15,
@@ -441,26 +470,47 @@ container: {
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.05)",
   },
-  actionsRow: { 
-    flexDirection: "row", 
+  actionsRow: {
+    flexDirection: "row",
     justifyContent: "space-between", // Spreads actions out cleanly inside the bar frame
     gap: 12,
-    marginTop: 14 
+    marginTop: 14,
   },
-  btn: { 
+  btn: {
     flex: 1, // Ensures cancel and save take up equal balanced column splits
     paddingVertical: 18, // Matches the exact menu items button line height
     borderRadius: 100, // Perfectly aligned capsule layout buttons
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.04)"
+    borderColor: "rgba(255, 255, 255, 0.04)",
   },
-  btnText: { 
-    color: "#fff", 
+  btnText: {
+    color: "#fff",
     fontWeight: "700",
     fontSize: 16,
-    letterSpacing: -0.2
+    letterSpacing: -0.2,
+  },
+  toast: {
+    position: "absolute",
+    bottom: 80,
+    left: "50%",
+    transform: [{ translateX: -50 }],
+    backgroundColor: "rgba(75, 181, 67, 0.9)",
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    zIndex: 1000,
+  },
+  toastText: {
+    color: "#fff",
+    fontWeight: "500",
+    textAlign: "center",
+    fontSize: 14,
   },
 });
 

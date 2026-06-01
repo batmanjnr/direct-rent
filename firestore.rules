@@ -12,9 +12,15 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isUserSuspended() {
+      return isSignedIn() && 
+             (exists(/databases/$(database)/documents/users/$(request.auth.uid)) ? 
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isSuspended', false) == true : false);
+    }
+
   function isGodMode() {
     return isSignedIn() && (
-      request.auth.token.email.lower() == 'adeyemiakinyemi01@gmail.com' ||
+      ('email' in request.auth.token && request.auth.token.email != null && request.auth.token.email == 'adeyemiakinyemi01@gmail.com') ||
       request.auth.uid == 'tR7HwQCTvJOLtnKBfKqTTzz3hw82'
     );
   }
@@ -22,8 +28,8 @@ service cloud.firestore {
   function isAdmin() {
     return isSignedIn() && (
       isGodMode() || 
-      (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-       get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'user') in ['admin', 'moderator', 'god', 'admin_staff'])
+      (exists(/databases/$(database)/documents/users/$(request.auth.uid)) ? 
+       get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'user') in ['admin', 'moderator', 'god', 'admin_staff'] : false)
     );
   }
 
@@ -34,8 +40,8 @@ service cloud.firestore {
   function isVerified() {
     return isSignedIn() && (
       isGodMode() || 
-      request.auth.token.email_verified == true || 
-      request.auth.token.firebase.sign_in_provider == 'phone' ||
+      ('email_verified' in request.auth.token && request.auth.token.email_verified == true) || 
+      ('firebase' in request.auth.token && 'sign_in_provider' in request.auth.token.firebase && request.auth.token.firebase.sign_in_provider == 'phone') ||
       ('phone_number' in request.auth.token && request.auth.token.phone_number != null)
     );
   }

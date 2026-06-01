@@ -37,6 +37,8 @@ const AuthContext = createContext({});
 export const AuthProvider = ({ children }) => {
   const router = useRouter();
   const { theme, setTheme } = useTheme();
+  const { isLoading: themeLoading } = useTheme();
+  const themeForceLightRef = useRef(false);
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("dashboard");
@@ -93,6 +95,23 @@ export const AuthProvider = ({ children }) => {
       }
 
       if (fbUser) {
+        // If this sign-in used the phone provider, ensure the app starts in light mode.
+        // If ThemeProvider is still loading (reading stored preference), defer the override
+        try {
+          const usedPhoneProvider = Array.isArray(fbUser.providerData)
+            ? fbUser.providerData.some((p) => p && p.providerId === "phone")
+            : false;
+          if (usedPhoneProvider) {
+            if (themeLoading) {
+              themeForceLightRef.current = true;
+            } else {
+              try {
+                setTheme("light");
+              } catch (e) {}
+            }
+          }
+        } catch (e) {}
+
         let profileUnsub = null;
         try {
           const userRef = doc(db, "users", fbUser.uid);
@@ -253,6 +272,16 @@ export const AuthProvider = ({ children }) => {
       }
     };
   }, []);
+
+  // If ThemeProvider was loading when we detected a phone sign-in, apply the forced light theme now.
+  useEffect(() => {
+    if (!themeLoading && themeForceLightRef.current) {
+      try {
+        setTheme("light");
+      } catch (e) {}
+      themeForceLightRef.current = false;
+    }
+  }, [themeLoading]);
 
   // Subscribe to the user's favorites subcollection so UI updates in real-time
   useEffect(() => {

@@ -1,32 +1,48 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
-  Modal,
+  StyleSheet,
   View,
   Text,
+  Modal,
   TouchableOpacity,
   TextInput,
-  FlatList,
   Image,
   ActivityIndicator,
-  StyleSheet,
-  Platform,
-  KeyboardAvoidingView,
-  SafeAreaView,
-  Alert,
   ScrollView,
+  FlatList,
+  Platform,
+  Linking,
+  Dimensions,
+  SafeAreaView,
+  Keyboard,
+  KeyboardAvoidingView,
 } from "react-native";
-import { Audio } from "expo-av";
-import * as ImagePicker from "expo-image-picker";
-import * as DocumentPicker from "expo-document-picker";
-import { X, Check, CheckCheck, Paperclip, Smile, Send, Mic, Square } from "lucide-react-native";
+import {
+  X,
+  Send,
+  User,
+  Loader2,
+  MessageSquare,
+  ShieldCheck,
+  Paperclip,
+  Mic,
+  FileText,
+  CreditCard,
+  ChevronRight,
+  CheckCircle2,
+  ArrowRight,
+  MessageCircle,
+  Play,
+  Pause,
+  Volume2,
+  Trash2,
+} from "lucide-react-native";
 import { db, handleFirestoreError, OperationType } from "../lib/firebase";
-import { auth } from "../lib/firebase";
-import * as FileSystem from "expo-file-system/legacy";
-import { useTheme } from "../context/ThemeContext";
-
+import SafeImage from "./safeimage";
 import {
   collection,
   query,
+  where,
   orderBy,
   onSnapshot,
   addDoc,
@@ -36,85 +52,225 @@ import {
   getDoc,
   updateDoc,
   increment,
-  getDocs,
-  where,
 } from "firebase/firestore";
-import { uploadFile } from "../lib/storage";
+import { useAuth } from "../context/AuthContext";
+import VerificationBadge from "./verificationbadge";
 import { createNotification } from "../lib/notifications";
 import { calculateVerificationLevel } from "../lib/verification";
+import { Audio } from "expo-av";
+import * as FileSystem from "expo-file-system";
+import * as FileSystemLegacy from "expo-file-system/legacy";
+import { storage } from "../lib/firebase";
+import {
+  ref as storageRef,
+  uploadBytes,
+  getDownloadURL,
+} from "firebase/storage";
 
-export const ChatModal = ({
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
+
+// Native Simulated Audio Player Component
+const audioCache = {}; // in-memory store base64 -> { sound, uri }
+
+const AudioPlayer = ({ src, isOwn, duration: propDuration }) => {
+  // Voice notes removed - render a simple placeholder so the rest of the chat stays functional
+  return (
+    <View
+      style={[
+        styles.audioContainer,
+        isOwn ? styles.audioOwn : styles.audioOther,
+      ]}
+    >
+      <Text style={styles.textMuted}>Voice messages disabled</Text>
+    </View>
+  );
+};
+
+const ChatModal = ({
   isOpen,
   onClose,
   listing,
   currentUser,
   overrideConversationId,
 }) => {
-  const { theme } = useTheme();
-  const isDark = theme === "dark";
-
+  const { setSelectedAgentId } = useAuth();
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState("");
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const [visualizerLevels, setVisualizerLevels] = useState(
+    new Array(20).fill(4),
+  );
   const [isLoading, setIsLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [convStatus, setConvStatus] = useState("inquiry");
   const [convData, setConvData] = useState(null);
   const [error, setError] = useState(null);
+  const [showWhatsAppDisclaimer, setShowWhatsAppDisclaimer] = useState(false);
+  const [showPrivacyBanner, setShowPrivacyBanner] = useState(true);
   const [otherUser, setOtherUser] = useState(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const recordingRef = useRef(null);
-  const [emojiVisible, setEmojiVisible] = useState(false);
-  const flatListRef = useRef(null);
-  const soundRef = useRef(null);
-  const playLockRef = useRef(false);
-  const [playingMessageId, setPlayingMessageId] = useState(null);
-  const [playbackStatus, setPlaybackStatus] = useState({
-    positionMillis: 0,
-    durationMillis: 0,
-    isPlaying: false,
-    rate: 1.0,
-  });
-  const [isAdoptingConversation, setIsAdoptingConversation] = useState(false);
-  const userUnsubRef = useRef(null);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [paymentProcessing, setPaymentProcessing] = useState(false);
+  const [paymentConfirmed, setPaymentConfirmed] = useState(false);
+  const [cachedPrice, setCachedPrice] = useState(0);
 
-  const initialConversationId =
+  // helper: parse a price value (number or string) into a numeric amount
+  const parsePrice = (p) => {
+    if (p == null) return 0;
+    if (typeof p === "number") return p;
+    try {
+      const s = String(p);
+      const num = parseFloat(s.replace(/[^0-9.]/g, ""));
+      return isNaN(num) ? 0 : num;
+    } catch (e) {
+      return 0;
+    }
+  };
+
+  // helper: format currency values consistently (fallback to #0.00)
+  const formatCurrency = (n) => {
+    const val = Number(n) || 0;
+    try {
+      return `#${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    } catch (e) {
+      return `#${val.toFixed(2)}`;
+    }
+  };
+
+  // Payment helpers: parse listing price and format currency
+  useEffect(() => {
+    const currentPrice = listing?.price || listing?.rent;
+    if (currentPrice) {
+      const parsed = parsePrice(currentPrice);
+      if (parsed !== cachedPrice) {
+        setCachedPrice(parsed);
+      }
+    }
+  }, [listing]); // Only runs when listing changes
+
+  // 3. apartmentFee now just returns the state value
+  const apartmentFee = cachedPrice;
+
+  // 4. Calculate total (this will now always have a value)
+  const serviceFee = 300;
+  const total = Math.round(apartmentFee + serviceFee);
+
+  const flatListRef = useRef(null);
+  const recordingIntervalRef = useRef(null);
+  const recordingRef = useRef(null);
+
+  const [keyboardOffset, setKeyboardOffset] = useState(0);
+
+  useEffect(() => {
+    const showEvent =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const handleShow = (e) => {
+      const height = e?.endCoordinates?.height || 0;
+      setKeyboardOffset(height);
+      // ensure messages scroll into view when keyboard opens
+      setTimeout(
+        () => flatListRef.current?.scrollToEnd({ animated: true }),
+        50,
+      );
+    };
+
+    const handleHide = () => setKeyboardOffset(0);
+
+    const showSub = Keyboard.addListener(showEvent, handleShow);
+    const hideSub = Keyboard.addListener(hideEvent, handleHide);
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  // helper to write base64 data to a temporary file using FileSystem if available
+  const writeBase64ToFile = async (base64Data) => {
+    try {
+      const filename = `${FileSystem.cacheDirectory}audio_${Date.now()}.m4a`;
+      const base64 = base64Data.split(",")[1] || base64Data;
+      await FileSystem.writeAsStringAsync(filename, base64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      return { uri: filename };
+    } catch (e) {
+      return { uri: null };
+    }
+  };
+
+  // helper to read a file as base64 with a safe fallback for EncodingType
+  const readFileAsBase64 = async (uri) => {
+    try {
+      const reader =
+        (FileSystemLegacy && FileSystemLegacy.readAsStringAsync) ||
+        FileSystem.readAsStringAsync;
+      const encoding =
+        (FileSystem.EncodingType && FileSystem.EncodingType.Base64) || "base64";
+      return await reader(uri, { encoding });
+    } catch (e) {
+      // final fallback: try literal 'base64' with whatever reader is available
+      try {
+        const reader =
+          (FileSystemLegacy && FileSystemLegacy.readAsStringAsync) ||
+          FileSystem.readAsStringAsync;
+        return await reader(uri, { encoding: "base64" });
+      } catch (err) {
+        console.error("readFileAsBase64 failed", err);
+        throw err;
+      }
+    }
+  };
+
+  // Upload a local file URI (file://...) to Firebase Storage and return download URL + storage path
+  const uploadFileUriToStorage = async (fileUri) => {
+    try {
+      // fetch file as blob
+      const response = await fetch(fileUri);
+      const blob = await response.blob();
+      const path = `audio_messages/${conversationId}/${Date.now()}_voice.m4a`;
+      const sRef = storageRef(storage, path);
+      await uploadBytes(sRef, blob);
+      const url = await getDownloadURL(sRef);
+
+      return { url, path, localUri: fileUri };
+    } catch (e) {
+      console.error("uploadFileUriToStorage error", e);
+      return { url: null, path: null };
+    }
+  };
+
+  // Download a remote URL to a local temp file for playback and return local uri
+  const downloadUrlToFile = async (url) => {
+    try {
+      // On web platforms we can use the remote URL directly (no file download available)
+      if (Platform && Platform.OS === "web") {
+        return url;
+      }
+
+      const filename = `${FileSystem.cacheDirectory}dl_${Date.now()}.m4a`;
+      const { uri } = await FileSystem.downloadAsync(url, filename);
+      return uri;
+    } catch (e) {
+      console.error("downloadUrlToFile error", e);
+      // If download failed, as a safe fallback return the remote URL so browsers can still play it
+      return url;
+    }
+  };
+
+  const conversationId =
     overrideConversationId ||
     (currentUser.role === "tenant"
-      ? `${currentUser.id}_${listing?.agent?.id || "unknown"}_${listing?.id || "unknown"}`
-      : `unknown_${currentUser.id}_${listing?.id || "unknown"}`);
-
-  const [conversationId, setConversationId] = useState(initialConversationId);
+      ? `${currentUser.id}_${listing.agent?.id || "unknown"}_${listing.id}`
+      : `unknown_${currentUser.id}_${listing.id}`);
 
   useEffect(() => {
     if (!isOpen) return;
-    if (!currentUser || !currentUser.id) {
-      setMessages([]);
-      setOtherUser(null);
-      setIsLoading(false);
-      return;
-    }
 
-    setIsLoading(true);
-    if (isAdoptingConversation) {
-      setError(null);
-      return;
-    }
-    setError(null);
-
-    (async () => {
-      if (overrideConversationId && !convData) {
-        try {
-          const convRef = doc(db, "conversations", overrideConversationId);
-          const snap = await getDoc(convRef);
-          if (snap.exists()) setConvData(snap.data());
-        } catch (err) {
-          console.warn("Failed to fetch conversation metadata", err);
-        }
-      }
-    })();
-
-    // Reset unread counts
-    (async () => {
+    const resetUnread = async () => {
       try {
         const convRef = doc(db, "conversations", conversationId);
         const convSnap = await getDoc(convRef);
@@ -128,824 +284,2012 @@ export const ChatModal = ({
               [fieldToReset]: 0,
               updatedAt: serverTimestamp(),
             }).catch((err) =>
-              handleFirestoreError(err, OperationType.UPDATE, `conversations/${conversationId}`)
+              handleFirestoreError(
+                err,
+                OperationType.UPDATE,
+                `conversations/${conversationId}`,
+              ),
             );
           }
         }
       } catch (err) {
-        console.warn("Reset unread failed", err);
+        console.error("Error resetting unread count:", err);
       }
-    })();
+    };
+    resetUnread();
+
+    setIsLoading(true);
+    setError(null);
 
     const convRef = doc(db, "conversations", conversationId);
+    let unsubOther;
+
     const unsubConv = onSnapshot(
       convRef,
-      async (snap) => {
+      (snap) => {
         if (snap.exists()) {
           const data = snap.data();
           setConvStatus(data.status || "inquiry");
           setConvData(data);
 
-          const otherId = currentUser.role === "tenant" ? data.agentId : data.tenantId;
-          if (otherId) {
-            if (userUnsubRef.current) {
-              try { userUnsubRef.current(); } catch (e) {}
-              userUnsubRef.current = null;
-            }
-
-            userUnsubRef.current = onSnapshot(
+          const otherId =
+            currentUser.role === "tenant" ? data.agentId : data.tenantId;
+          if (otherId && !unsubOther) {
+            unsubOther = onSnapshot(
               doc(db, "users", otherId),
               (userSnap) => {
                 if (userSnap.exists()) {
                   const d = userSnap.data();
                   setOtherUser({
-                    name: d.firstName || d.lastName ? `${d.firstName || ""} ${d.lastName || ""}`.trim() : d.name || "User",
+                    name:
+                      d.firstName || d.lastName
+                        ? `${d.firstName || ""} ${d.lastName || ""}`.trim()
+                        : d.name || "User",
                     avatarUrl: d.avatarUrl,
-                    verificationLevel: d.verificationLevel === "verified" ? "verified" : calculateVerificationLevel(d),
+                    verificationLevel:
+                      d.verificationLevel === "verified"
+                        ? "verified"
+                        : calculateVerificationLevel(d),
                     role: d.role,
                     phoneNumber: d.phoneNumber,
                   });
                 }
               },
-              (err) => handleFirestoreError(err, OperationType.GET, `users/${otherId}`)
+              (err) =>
+                handleFirestoreError(
+                  err,
+                  OperationType.GET,
+                  `users/${otherId}`,
+                ),
             );
           }
         }
       },
-      (err) => handleFirestoreError(err, OperationType.GET, `conversations/${conversationId}`)
+      (err) =>
+        handleFirestoreError(
+          err,
+          OperationType.GET,
+          `conversations/${conversationId}`,
+        ),
     );
 
-    const messagesRef = collection(db, "conversations", conversationId, "messages");
+    const messagesRef = collection(
+      db,
+      "conversations",
+      conversationId,
+      "messages",
+    );
     const q = query(messagesRef, orderBy("createdAt", "asc"));
 
-    const unsubMessages = onSnapshot(
+    const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        const msgs = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const msgs = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
         setMessages(msgs);
         setIsLoading(false);
         setError(null);
-        setTimeout(() => {
-          try {
-            if (flatListRef.current && msgs.length > 0) {
-              flatListRef.current.scrollToEnd({ animated: true });
-            }
-          } catch (e) {}
-        }, 120);
       },
       (err) => {
         console.error("Chat listener error:", err);
+        handleFirestoreError(
+          err,
+          OperationType.LIST,
+          `conversations/${conversationId}/messages`,
+        );
+        if (err.code === "permission-denied") {
+          if (convData) {
+            setError(
+              "Missing permissions. Please ensure your session is active.",
+            );
+          }
+        } else {
+          setError("Failed to load messages.");
+        }
         setIsLoading(false);
-      }
+      },
     );
 
     return () => {
-      unsubMessages();
+      unsubscribe();
       unsubConv();
-      if (userUnsubRef.current) {
-        try { userUnsubRef.current(); } catch (e) {}
-      }
+      if (unsubOther) unsubOther();
     };
-  }, [isOpen, conversationId, currentUser.id, currentUser.role, isAdoptingConversation]);
+  }, [isOpen, conversationId, currentUser.id, currentUser.role]);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        setIsAdoptingConversation(true);
-        const convRef = doc(db, "conversations", conversationId);
-        const convSnap = await getDoc(convRef);
-        if (convSnap.exists()) {
-          if (!cancelled) setIsAdoptingConversation(false);
-          return;
-        }
-
-        const listingId = listing?.id?.toString() || convData?.listingId?.toString() || "unknown";
-        const agentIdCandidate = listing?.agent?.id || convData?.agentId || (currentUser.role === "agent" ? currentUser.id : null);
-        if (!listingId || listingId === "unknown" || !agentIdCandidate) {
-          if (!cancelled) setIsAdoptingConversation(false);
-          return;
-        }
-
-        const q = query(collection(db, "conversations"), where("listingId", "==", listingId), where("agentId", "==", agentIdCandidate));
-        const snaps = await getDocs(q);
-        if (!snaps.empty && !cancelled) {
-          setConversationId(snaps.docs[0].id);
-        }
-      } catch (e) {
-        console.warn("conversation adopt lookup failed", e);
-      } finally {
-        if (!cancelled) setIsAdoptingConversation(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [isOpen, listing?.id, convData?.listingId, currentUser.id, currentUser.role]);
-
-  // Safely converts native app-cached paths into standard uploadable blobs via accurate Base64 array parsing
-  const uriToBlob = async (uri) => {
-    try {
-      const base64String = await FileSystem.readAsStringAsync(uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      const response = await fetch(`data:audio/x-m4a;base64,${base64String}`);
-      return await response.blob();
-    } catch (e) {
-      console.warn("Base64 blob parser fallback initiated:", e);
-      const response = await fetch(uri);
-      return await response.blob();
-    }
-  };
-
-  const ensureConversationExists = async (lastMsg) => {
-    try { await ensureFreshAuth(); } catch (e) {}
-    let convRef = doc(db, "conversations", conversationId);
-    let convDoc = await getDoc(convRef);
-    if (!convDoc.exists()) {
-      const agentId = listing?.agent?.id || convData?.agentId || "unknown";
-      const tenantId = convData?.tenantId || (currentUser.role === "tenant" ? currentUser.id : conversationId.split("_")[0] || "unknown");
-      let agentImage = listing?.agent?.avatarUrl || convData?.agentImage || "";
-      const listingId = listing?.id?.toString() || convData?.listingId?.toString() || "unknown";
-
-      await setDoc(convRef, {
-        id: convRef.id,
-        tenantId: tenantId,
-        agentId: agentId,
-        listingId: listingId,
-        tenantName: `${currentUser.firstName || ""} ${currentUser.lastName || ""}`.trim() || "User",
-        agentName: listing?.agent?.name || convData?.agentName || "Agent",
-        tenantImage: currentUser.avatarUrl || "",
-        agentImage: agentImage,
-        listingTitle: listing?.title || convData?.listingTitle || "",
-        listingImage: listing?.image || convData?.listingImage || "",
-        listingPrice: listing?.price || convData?.listingPrice || "",
-        status: "inquiry",
-        updatedAt: serverTimestamp(),
-        lastMessage: lastMsg,
-        unreadCount_tenant: currentUser.role === "tenant" ? 0 : 1,
-        unreadCount_agent: currentUser.role === "agent" ? 0 : 1,
-      });
-    } else {
-      await updateDoc(convRef, {
-        lastMessage: lastMsg,
-        updatedAt: serverTimestamp(),
-        [currentUser.role === "tenant" ? "unreadCount_agent" : "unreadCount_tenant"]: increment(1),
-      });
-    }
-  };
-
-  const sendTextMessage = async (text) => {
-    if (!text.trim() || isSending) return;
+  const handleAction = async (actionType, content, nextStatus) => {
+    if (isSending) return;
     setIsSending(true);
-    setError(null);
     try {
-      await ensureConversationExists(text.trim());
-      const agentId = listing?.agent?.id || convData?.agentId || "unknown";
-      const tenantId = convData?.tenantId || (currentUser.role === "tenant" ? currentUser.id : conversationId.split("_")[0]);
-      const senderUid = auth?.currentUser?.uid || currentUser.id;
+      const convRef = doc(db, "conversations", conversationId);
+      const agentId = listing.agent?.id || convData?.agentId || "unknown";
+      const tenantId =
+        convData?.tenantId ||
+        (currentUser.role === "tenant"
+          ? currentUser.id
+          : conversationId.split("_")[0]);
 
-      await addDocWithRetry(collection(db, "conversations", conversationId, "messages"), {
-        content: text.trim(),
-        senderId: senderUid,
-        tenantId: tenantId,
-        agentId: agentId,
-        type: "text",
-        createdAt: serverTimestamp(),
-        read: false,
-      });
+      await updateDoc(convRef, {
+        status: nextStatus,
+        lastMessage: content,
+        updatedAt: serverTimestamp(),
+        [currentUser.role === "tenant"
+          ? "unreadCount_agent"
+          : "unreadCount_tenant"]: increment(1),
+      }).catch((err) =>
+        handleFirestoreError(
+          err,
+          OperationType.UPDATE,
+          `conversations/${conversationId}`,
+        ),
+      );
 
-      setNewMessage("");
+      if (nextStatus === "completed" && agentId !== "unknown") {
+        const agentDocRef = doc(db, "users", agentId);
+        await updateDoc(agentDocRef, {
+          completedTxns: increment(1),
+          updatedAt: serverTimestamp(),
+        }).catch((err) =>
+          handleFirestoreError(err, OperationType.UPDATE, `users/${agentId}`),
+        );
+      }
+
+      await addDoc(
+        collection(db, "conversations", conversationId, "messages"),
+        {
+          content: content,
+          senderId: currentUser.id,
+          tenantId: tenantId,
+          agentId: agentId,
+          type: "action",
+          actionType: actionType,
+          createdAt: serverTimestamp(),
+        },
+      ).catch((err) =>
+        handleFirestoreError(
+          err,
+          OperationType.CREATE,
+          `conversations/${conversationId}/messages`,
+        ),
+      );
+
+      const recipientId = currentUser.role === "tenant" ? agentId : tenantId;
+      if (recipientId && recipientId !== "unknown") {
+        await createNotification(
+          recipientId,
+          `Transaction Update: ${actionType.replace("_", " ")}`,
+          content,
+          "message",
+          "chat",
+          conversationId,
+        );
+      }
     } catch (err) {
-      setError("Failed to send message.");
+      console.error("Action error:", err);
+      setError("Failed to process transaction step.");
     } finally {
       setIsSending(false);
     }
   };
 
-  const pickDocument = async () => {
-    try {
-      const res = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
-      if (!res || res.type === "cancel" || !res.assets?.[0]) return;
-      
-      setIsSending(true);
-      const targetAsset = res.assets[0];
-      const blob = await uriToBlob(targetAsset.uri);
-      const url = await uploadFile(blob, `conversations/${conversationId}/attachments/${currentUser.id}/${Date.now()}_${targetAsset.name}`);
+  const handleWhatsAppTransition = () => {
+    const phoneNumber = otherUser?.phoneNumber || convData?.agentPhone;
+    if (!phoneNumber) {
+      setError("Agent's contact number is not available yet.");
+      return;
+    }
+    setShowWhatsAppDisclaimer(true);
+  };
 
-      await ensureConversationExists("[Attachment]");
-      await addDocWithRetry(collection(db, "conversations", conversationId, "messages"), {
-        content: targetAsset.name || "Attachment",
-        fileUrl: url,
-        fileType: targetAsset.mimeType || "file",
-        senderId: auth?.currentUser?.uid || currentUser.id,
-        tenantId: convData?.tenantId || (currentUser.role === "tenant" ? currentUser.id : conversationId.split("_")[0]),
-        agentId: listing?.agent?.id || convData?.agentId || "unknown",
-        type: "file",
+  const confirmWhatsApp = () => {
+    const phoneNumber = otherUser?.phoneNumber || convData?.agentPhone;
+    if (!phoneNumber) return;
+
+    let cleanPhone = phoneNumber.replace(/\D/g, "");
+    if (cleanPhone.startsWith("0")) {
+      cleanPhone = "234" + cleanPhone.substring(1);
+    } else if (!cleanPhone.startsWith("234")) {
+      cleanPhone = "234" + cleanPhone;
+    }
+
+    const message = encodeURIComponent(
+      `Hi, I'm interested in your listing: ${listing.title} on DirectRent. Listing Ref: ${listing.id}`,
+    );
+    Linking.openURL(`https://wa.me/${cleanPhone}?text=${message}`);
+    setShowWhatsAppDisclaimer(false);
+  };
+
+  // Tenant-only actions: pay now and report user
+  const handlePayNow = async () => {
+    // reuse handleAction to update conversation status and send action message
+    try {
+      await handleAction(
+        "paid",
+        "Payment of security deposit initiated via in-app payment.",
+        "paid",
+      );
+    } catch (e) {
+      console.error("Pay now error", e);
+      setError("Failed to initiate payment.");
+    }
+  };
+
+  const handleReportUser = async () => {
+    try {
+      const reportedId =
+        convData?.agentId ||
+        listing.agent?.id ||
+        (conversationId.split("_")[1] ?? "unknown");
+      await addDoc(collection(db, "reports"), {
+        reporterId: currentUser.id,
+        reportedId: reportedId,
+        conversationId: conversationId,
+        listingId: listing?.id || null,
+        reason: "Reported from chat modal",
         createdAt: serverTimestamp(),
-        read: false,
       });
+      setError("Report submitted. Thank you.");
+      setTimeout(() => setError(null), 3500);
     } catch (err) {
-      setError("Failed to attach document.");
-    } finally {
-      setIsSending(false);
+      console.error("Report error", err);
+      setError("Failed to submit report.");
     }
   };
 
   const startRecording = async () => {
     try {
-      const permissions = await Audio.requestPermissionsAsync();
-      if (!permissions.granted) {
-        Alert.alert("Permission Required", "Please allow access to microphone to record.");
+      // request permissions
+      const perm = await Audio.requestPermissionsAsync();
+      if (!perm.granted) {
+        setError("Microphone permission denied");
         return;
       }
-      
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
       });
 
       const recording = new Audio.Recording();
-      await recording.prepareToRecordAsync({
-        android: {
-          extension: '.m4a',
-          outputFormat: Audio.RECORDING_OPTION_ANDROID_OUTPUT_FORMAT_MPEG_4,
-          audioEncoder: Audio.RECORDING_OPTION_ANDROID_AUDIO_ENCODER_AAC,
-          sampleRate: 44100,
-          numberOfChannels: 2,
-          bitRate: 128000,
-        },
-        ios: {
-          extension: '.m4a',
-          outputFormat: Audio.RECORDING_OPTION_IOS_OUTPUT_FORMAT_MPEG4AAC,
-          audioQuality: Audio.RECORDING_OPTION_IOS_AUDIO_QUALITY_MAX,
-          sampleRate: 44100,
-          numberOfChannels: 2,
-          bitRate: 128000,
-          linearPCMBitDepth: 16,
-          linearPCMIsBigEndian: false,
-          linearPCMIsFloat: false,
-        },
-      });
-      
-      recordingRef.current = recording;
+      await recording.prepareToRecordAsync(
+        Audio.RECORDING_OPTIONS_PRESET_HIGH_QUALITY,
+      );
       await recording.startAsync();
+      recordingRef.current = recording;
+
       setIsRecording(true);
+      // update UI timer
+      recordingIntervalRef.current = setInterval(() => {
+        setRecordingTime((prev) => prev + 1);
+        setVisualizerLevels(
+          Array.from({ length: 20 }).map(() =>
+            Math.max(3, Math.floor(Math.random() * 16)),
+          ),
+        );
+      }, 1000);
     } catch (err) {
-      console.warn("Recording start failed:", err);
-      Alert.alert("Recording error", "Unable to access native audio input stream.");
+      console.error("Recording error:", err);
+      setError("Could not access microphone.");
     }
   };
 
-  const stopRecordingAndSend = async () => {
-    let uri;
-    try {
-      const recording = recordingRef.current;
-      if (!recording) return;
-      await recording.stopAndUnloadAsync();
-      uri = recording.getURI();
-      recordingRef.current = null;
-      setIsRecording(false);
-      
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-      });
-      
-      if (!uri) throw new Error("No tracking audio path file produced");
-    } catch (err) {
-      console.warn("Recording stop failed:", err);
-      setIsRecording(false);
-      Alert.alert("Error", "Could not stop audio processing device cleanly.");
-      return;
+  const stopRecording = (cancel = false) => {
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
     }
+    setVisualizerLevels(new Array(20).fill(4));
 
+    (async () => {
+      let recordedDuration = recordingTime;
+      try {
+        if (recordingRef.current) {
+          await recordingRef.current.stopAndUnloadAsync();
+          const status = await recordingRef.current.getStatusAsync();
+          recordedDuration = Math.round(
+            (status.durationMillis || recordedDuration * 1000) / 1000,
+          );
+          const uri = recordingRef.current.getURI();
+          if (uri) {
+            // Read recorded file as base64 and send inline (matches web behavior)
+            try {
+              const base64 = await readFileAsBase64(uri);
+              const dataUri = `data:audio/m4a;base64,${base64}`;
+              // cache mapping so AudioPlayer can create a temp file when needed
+              audioCache[dataUri] = { uri };
+              if (!cancel) {
+                await handleSendAudio(dataUri, recordedDuration);
+              }
+            } catch (e) {
+              console.warn(
+                "Failed to read recording as base64, attempting upload fallback",
+                e,
+              );
+              // fallback to upload then send URL
+              try {
+                const uploadResult = await uploadFileUriToStorage(uri);
+                if (uploadResult && uploadResult.url) {
+                  audioCache[uploadResult.url] = { uri };
+                  if (!cancel) {
+                    await handleSendAudio(uploadResult.url, recordedDuration);
+                  }
+                } else {
+                  if (!cancel) {
+                    await handleSendAudio(uri, recordedDuration);
+                  }
+                }
+              } catch (e2) {
+                console.error("Upload fallback failed", e2);
+                if (!cancel) {
+                  await handleSendAudio(uri, recordedDuration);
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Stop recording error", e);
+        if (!cancel) {
+          const uniquePlaybackId = `voice_note_${Date.now()}`;
+          await handleSendAudio(uniquePlaybackId, recordedDuration);
+        }
+      } finally {
+        recordingRef.current = null;
+        setIsRecording(false);
+        setRecordingTime(0);
+      }
+    })();
+  };
+
+  const handleSendAudio = async (source, recordedDuration = null) => {
     setIsSending(true);
+    setError(null);
     try {
-      const blob = await uriToBlob(uri);
-      const url = await uploadFile(blob, `conversations/${conversationId}/attachments/${currentUser.id}/audio_${Date.now()}.m4a`);
-      await ensureConversationExists("[Voice Note]");
+      let contentToStore = source;
 
-      await addDocWithRetry(collection(db, "conversations", conversationId, "messages"), {
-        content: "Voice note",
-        fileUrl: url,
-        fileType: "audio",
-        senderId: auth?.currentUser?.uid || currentUser.id,
-        tenantId: convData?.tenantId || (currentUser.role === "tenant" ? currentUser.id : conversationId.split("_")[0]),
-        agentId: listing?.agent?.id || convData?.agentId || "unknown",
-        type: "audio",
-        createdAt: serverTimestamp(),
-        read: false,
+      // If source is a local file URI or base64 data URI, upload it to Firebase Storage
+      if (
+        source &&
+        (source.startsWith("data:audio") || source.startsWith("file://"))
+      ) {
+        let uploadResult = null;
+
+        if (source.startsWith("data:audio")) {
+          // already base64 data URI
+          contentToStore = source;
+        } else {
+          // file:// URI recorded from device -> try upload
+          try {
+            uploadResult = await uploadFileUriToStorage(source);
+          } catch (e) {
+            console.warn("uploadFileUriToStorage failed", e);
+            uploadResult = null;
+          }
+
+          if (uploadResult && uploadResult.url) {
+            contentToStore = uploadResult.url;
+            // cache local file for immediate playback if available
+            if (uploadResult.localUri)
+              audioCache[contentToStore] = { uri: uploadResult.localUri };
+          } else {
+            // Fallback: convert local file to base64 and send inline (like web)
+            try {
+              const base64 = await readFileAsBase64(source);
+              contentToStore = `data:audio/m4a;base64,${base64}`;
+              // cache mapping so AudioPlayer can create a temp file when needed
+              audioCache[contentToStore] = { uri: source };
+            } catch (e) {
+              console.error(
+                "Failed to convert audio file to base64 fallback",
+                e,
+              );
+            }
+          }
+        }
+      }
+
+      const tenantId =
+        convData?.tenantId ||
+        (currentUser.role === "tenant"
+          ? currentUser.id
+          : conversationId.split("_")[0]);
+      const agentId = listing.agent?.id || "unknown";
+
+      await addDoc(
+        collection(db, "conversations", conversationId, "messages"),
+        {
+          content: contentToStore,
+          senderId: currentUser.id,
+          tenantId: tenantId,
+          agentId: agentId,
+          type: "audio",
+          duration: recordedDuration,
+          createdAt: serverTimestamp(),
+        },
+      );
+
+      await updateDoc(doc(db, "conversations", conversationId), {
+        lastMessage: "Audio message",
+        updatedAt: serverTimestamp(),
+        [currentUser.role === "tenant"
+          ? "unreadCount_agent"
+          : "unreadCount_tenant"]: increment(1),
       });
+
+      const recipientId = currentUser.role === "tenant" ? agentId : tenantId;
+      if (recipientId && recipientId !== "unknown") {
+        await createNotification(
+          recipientId,
+          `New audio message from ${`${currentUser.firstName || ""} ${currentUser.lastName || ""}`.trim() || "User"}`,
+          "Audio message",
+          "message",
+          "chat",
+          conversationId,
+        );
+      }
     } catch (err) {
-      console.warn("Upload audio failed:", err);
-      Alert.alert("Send failed", "Unable to upload voice note to cloud storage.");
+      console.error("Audio processing/send error:", err);
+      setError("Failed to send audio message.");
     } finally {
       setIsSending(false);
     }
   };
 
-  const playVoiceMessage = async (message) => {
+  const handleSendMessage = async () => {
+    if (!newMessage.trim() || isSending) return;
+
+    setIsSending(true);
+    setError(null);
+    const messageContent = newMessage.trim();
+    setNewMessage("");
+
     try {
-      if (playingMessageId === message.id) {
-        if (playbackStatus.isPlaying) {
-          await soundRef.current?.pauseAsync();
-        } else {
-          await soundRef.current?.playAsync();
+      const convRef = doc(db, "conversations", conversationId);
+      const agentId = listing.agent?.id || "unknown";
+
+      const convDoc = await getDoc(convRef);
+      if (!convDoc.exists()) {
+        // compute safe fallbacks for conversation fields to avoid undefined being written
+        let agentImage = "";
+        if (agentId !== "unknown") {
+          const agentDoc = await getDoc(doc(db, "users", agentId));
+          if (agentDoc.exists()) {
+            agentImage = agentDoc.data().avatarUrl || "";
+          }
         }
-        return;
-      }
-      if (playLockRef.current) return;
-      playLockRef.current = true;
 
-      if (soundRef.current) {
-        try { await soundRef.current.unloadAsync(); } catch (e) {}
-        soundRef.current = null;
-      }
+        const safeListingId = listing?.id
+          ? String(listing.id)
+          : conversationId.split("_")[2] || null;
+        const safeListingTitle =
+          listing?.title || (convData && convData.listingTitle) || "";
+        const safeListingImage =
+          listing?.image || (convData && convData.listingImage) || "";
+        const safeListingPrice =
+          listing?.price != null
+            ? listing.price
+            : convData && convData.listingPrice != null
+              ? convData.listingPrice
+              : null;
 
-      setPlayingMessageId(message.id);
-      setPlaybackStatus((p) => ({ ...p, positionMillis: 0, durationMillis: 0, isPlaying: false }));
-
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: message.fileUrl },
-        { shouldPlay: true, rate: playbackStatus.rate, shouldCorrectPitch: true }
-      );
-      soundRef.current = sound;
-      soundRef.current.setOnPlaybackStatusUpdate((status) => {
-        if (!status) return;
-        setPlaybackStatus({
-          positionMillis: status.positionMillis || 0,
-          durationMillis: status.durationMillis || 0,
-          isPlaying: status.isPlaying || false,
-          rate: status.rate || 1.0,
+        await setDoc(convRef, {
+          id: conversationId,
+          tenantId: currentUser.id,
+          agentId: agentId,
+          listingId: safeListingId,
+          tenantName:
+            `${currentUser.firstName || ""} ${currentUser.lastName || ""}`.trim() ||
+            "User",
+          agentName: safeListingTitle
+            ? listing?.agent?.name || convData?.agentName || "Agent"
+            : listing?.agent?.name || convData?.agentName || "Agent",
+          tenantImage: currentUser.avatarUrl || "",
+          agentImage: agentImage || (convData && convData.agentImage) || "",
+          listingTitle: safeListingTitle,
+          listingImage: safeListingImage,
+          listingPrice: safeListingPrice,
+          status: "inquiry",
+          updatedAt: serverTimestamp(),
+          lastMessage: messageContent,
+          unreadCount_tenant: currentUser.role === "tenant" ? 0 : 1,
+          unreadCount_agent: currentUser.role === "agent" ? 0 : 1,
         });
-        if (status.didJustFinish) {
-          setPlayingMessageId(null);
-        }
-      });
-      playLockRef.current = false;
+
+        const listingDocRef = doc(db, "listings", listing.id.toString());
+        await setDoc(
+          listingDocRef,
+          {
+            inquiryCount: increment(1),
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true },
+        );
+      } else {
+        await updateDoc(convRef, {
+          lastMessage: messageContent,
+          updatedAt: serverTimestamp(),
+          [currentUser.role === "tenant"
+            ? "unreadCount_agent"
+            : "unreadCount_tenant"]: increment(1),
+        });
+      }
+
+      const tenantId =
+        convData?.tenantId ||
+        (currentUser.role === "tenant"
+          ? currentUser.id
+          : conversationId.split("_")[0]);
+
+      await addDoc(
+        collection(db, "conversations", conversationId, "messages"),
+        {
+          content: messageContent,
+          senderId: currentUser.id,
+          tenantId: tenantId,
+          agentId: agentId,
+          type: "text",
+          createdAt: serverTimestamp(),
+        },
+      );
+
+      const recipientId = currentUser.role === "tenant" ? agentId : tenantId;
+      if (recipientId && recipientId !== "unknown") {
+        await createNotification(
+          recipientId,
+          `New message from ${`${currentUser.firstName || ""} ${currentUser.lastName || ""}`.trim() || "User"}`,
+          messageContent,
+          "message",
+          "chat",
+          conversationId,
+        );
+      }
     } catch (err) {
-      setPlayingMessageId(null);
-      playLockRef.current = false;
+      console.error("Error sending message:", err);
+      setError("Failed to send message.");
+    } finally {
+      setIsSending(false);
     }
   };
 
-  async function changePlaybackRate() {
-    const rates = [1.0, 1.5, 2.0];
-    const currentRate = playbackStatus?.rate || 1.0;
-    const idx = rates.indexOf(currentRate) >= 0 ? rates.indexOf(currentRate) : 0;
-    const next = rates[(idx + 1) % rates.length];
-    setPlaybackStatus((p) => ({ ...p, rate: next }));
-    if (soundRef.current) {
-      await soundRef.current.setRateAsync(next, true);
-    }
-  }
-
-  const formatTime = (ms) => {
-    if (!ms || ms <= 0) return "0:00";
-    const total = Math.floor(ms / 1000);
-    const minutes = Math.floor(total / 60);
-    const seconds = total % 60;
-    return `${minutes}:${String(seconds).padStart(2, "0")}`;
-  };
-
-  const renderMessageTicks = (item, isMine) => {
-    if (!isMine) return null;
-    return item.read ? (
-      <CheckCheck size={15} color="#34b7f1" style={styles.ticks} />
-    ) : (
-      <CheckCheck size={15} color={isDark ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.3)"} style={styles.ticks} />
-    );
-  };
-
-  const renderMessage = ({ item }) => {
-    const isMine = item.senderId === currentUser.id;
-    const isAudio = item.type === "audio" || item.fileType === "audio";
-
-    const timeString = item.createdAt 
-      ? new Date(item.createdAt.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : "";
-
-    if (isAudio) {
-      const isCurrentPlaying = playingMessageId === item.id;
+  const renderMessageItem = ({ item: msg }) => {
+    if (msg.type === "action") {
       return (
-        <View style={[styles.bubble, isMine ? styles.bubbleRight : styles.bubbleLeft, { minWidth: '72%' }]}>
-          <View style={styles.whatsappAudioRow}>
-            <View style={styles.voiceAvatarContainer}>
-              {isMine ? (
-                currentUser?.avatarUrl ? (
-                  <Image source={{ uri: currentUser.avatarUrl }} style={styles.voiceAvatar} />
-                ) : (
-                  <View style={[styles.voiceAvatar, styles.voiceAvatarPlaceholder]}><Text style={styles.voiceAvatarTxt}>U</Text></View>
-                )
-              ) : (
-                otherUser?.avatarUrl ? (
-                  <Image source={{ uri: otherUser.avatarUrl }} style={styles.voiceAvatar} />
-                ) : (
-                  <View style={[styles.voiceAvatar, styles.voiceAvatarPlaceholder]}><Text style={styles.voiceAvatarTxt}>A</Text></View>
-                )
-              )}
-              <TouchableOpacity onPress={() => playVoiceMessage(item)} style={styles.waPlayButton}>
-                <Text style={{ color: "#fff", fontSize: 11 }}>
-                  {isCurrentPlaying && playbackStatus.isPlaying ? "⏸" : "▶"}
-                </Text>
-              </TouchableOpacity>
-            </View>
+        <View style={styles.actionMessageContainer}>
+          <View style={styles.actionIconWrapper}>
+            {msg.actionType === "paid" ? (
+              <CreditCard size={18} color="#4f46e5" />
+            ) : (
+              <FileText size={18} color="#4f46e5" />
+            )}
+          </View>
+          <Text style={styles.actionUpdateLabel}>Update</Text>
+          <Text style={styles.actionContentText}>"{msg.content}"</Text>
+          <Text style={styles.actionBlockFooter}>Verified Property Block</Text>
+        </View>
+      );
+    }
 
-            <View style={styles.waAudioTimeline}>
-              <View style={styles.waProgressContainer}>
-                <View style={[styles.waProgressBackground, { backgroundColor: isMine ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.1)" }]}>
-                  <View style={[styles.waProgressFill, {
-                    backgroundColor: isMine ? "#34b7f1" : "#059669",
-                    width: `${isCurrentPlaying && playbackStatus.durationMillis ? (playbackStatus.positionMillis / playbackStatus.durationMillis) * 100 : 0}%`
-                  }]} />
-                </View>
-              </View>
-              <View style={styles.waAudioMetaRow}>
-                <Text style={[styles.waAudioTime, { color: isMine ? "rgba(255,255,255,0.8)" : "rgba(15,23,42,0.6)" }]}>
-                  {formatTime(isCurrentPlaying ? playbackStatus.positionMillis : 0)}
-                </Text>
-                <View style={styles.timeAndTicksRow}>
-                  <Text style={[styles.bubbleTime, { color: isMine ? "rgba(255,255,255,0.7)" : "rgba(15,23,42,0.5)" }]}>{timeString}</Text>
-                  {renderMessageTicks(item, isMine)}
-                </View>
-              </View>
-            </View>
-
-            <TouchableOpacity onPress={changePlaybackRate} style={[styles.waSpeedBadge, { backgroundColor: isMine ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.06)" }]}>
-              <Text style={[styles.waSpeedText, { color: isMine ? "#fff" : "#0f172a" }]}>
-                {isCurrentPlaying ? playbackStatus.rate : 1}x
-              </Text>
-            </TouchableOpacity>
+    if (msg.type === "audio") {
+      // Voice messages have been removed; show a simple labelled bubble instead
+      return (
+        <View
+          style={[
+            styles.messageRow,
+            msg.senderId === currentUser.id
+              ? styles.justifyEnd
+              : styles.justifyStart,
+          ]}
+        >
+          <View
+            style={[
+              styles.bubble,
+              msg.senderId === currentUser.id
+                ? styles.bubbleOwn
+                : styles.bubbleOther,
+            ]}
+          >
+            <Text
+              style={[
+                styles.bubbleText,
+                msg.senderId === currentUser.id
+                  ? styles.textWhite
+                  : styles.textDark,
+              ]}
+            >
+              [Voice message removed]
+            </Text>
           </View>
         </View>
       );
     }
 
+    const isOwn = msg.senderId === currentUser.id;
     return (
-      <View style={[styles.bubble, isMine ? styles.bubbleRight : styles.bubbleLeft]}>
-        <Text style={isMine ? styles.bubbleTextRight : styles.bubbleTextLeft}>
-          {item.content}
-        </Text>
-        <View style={styles.textMetaContainer}>
-          <Text style={[styles.bubbleTime, { color: isMine ? "rgba(255,255,255,0.7)" : "rgba(15,23,42,0.5)" }]}>
-            {timeString}
+      <View
+        style={[
+          styles.messageRow,
+          isOwn ? styles.justifyEnd : styles.justifyStart,
+        ]}
+      >
+        <View
+          style={[styles.bubble, isOwn ? styles.bubbleOwn : styles.bubbleOther]}
+        >
+          <Text
+            style={[
+              styles.bubbleText,
+              isOwn ? styles.textWhite : styles.textDark,
+            ]}
+          >
+            {msg.content}
           </Text>
-          {renderMessageTicks(item, isMine)}
         </View>
       </View>
     );
   };
 
-  const handleMakePayment = () => {
-    const url = listing?.paymentLink || convData?.paymentLink;
-    if (url) { FileSystem.openUrl(url); }
-  };
-
-  async function ensureFreshAuth() {
-    if (auth?.currentUser?.getIdToken) { await auth.currentUser.getIdToken(true); }
-    return auth?.currentUser?.uid;
-  }
-
-  const addDocWithRetry = async (ref, payload, retries = 1) => {
-    try { return await addDoc(ref, payload); } catch (err) {
-      if (retries > 0) {
-        await ensureFreshAuth();
-        return addDocWithRetry(ref, payload, retries - 1);
-      }
-      throw err;
-    }
-  };
-
-  const emojis = ["😀", "😂", "😍", "👍", "🙏", "🔥", "🎉", "✨"];
-
   return (
-    <Modal visible={isOpen} animationType="slide" transparent={true} onRequestClose={onClose}>
-      <View style={[styles.modalOverlay, { backgroundColor: isDark ? "rgba(11, 17, 32, 0.96)" : "#ffffff" }]}>
-        <SafeAreaView style={styles.glassContainer}>
-          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.flex}>
-            
-            {/* Header Plate */}
-            <View style={[styles.glassHeader, { 
-              backgroundColor: isDark ? "rgba(15, 23, 42, 0.94)" : "rgba(248, 250, 252, 0.95)",
-              borderColor: isDark ? "rgba(255, 255, 255, 0.12)" : "rgba(15, 23, 42, 0.08)"
-            }]}>
-              <View style={styles.headerLeft}>
-                <View style={styles.avatar}>
-                  {otherUser?.avatarUrl ? (
-                    <Image source={{ uri: otherUser.avatarUrl }} style={styles.avatarImage} />
-                  ) : (
-                    <Text style={styles.avatarText}>{(otherUser?.name || "A").charAt(0)}</Text>
-                  )}
-                </View>
-                <View>
-                  <Text style={[styles.title, { color: isDark ? "#fff" : "#1e293b" }]}>{otherUser?.name || "Loading..."}</Text>
-                  <Text style={styles.status}>online</Text>
+    <Modal
+      visible={isOpen}
+      animationType="slide"
+      transparent={true}
+      onRequestClose={onClose}
+    >
+      <View style={styles.modalBackdrop}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 70}
+          enabled
+          style={styles.modalAvoidingView}
+        >
+          <View style={styles.modalContentContainer}>
+            {/* WhatsApp Security Notice Sub-Modal */}
+            {showWhatsAppDisclaimer && (
+              <View style={styles.disclaimerWrapper}>
+                <View style={styles.disclaimerCard}>
+                  <View style={styles.disclaimerIconContainer}>
+                    <ShieldCheck size={24} color="#10b981" />
+                  </View>
+                  <Text style={styles.disclaimerTitle}>Security Notice</Text>
+                  <Text style={styles.disclaimerBody}>
+                    Finalizing terms on WhatsApp? Note that DirectRent can only
+                    protect transactions processed through this app.
+                  </Text>
+                  <View style={styles.disclaimerActionColumn}>
+                    <TouchableOpacity
+                      style={styles.waConnectBtn}
+                      onPress={confirmWhatsApp}
+                    >
+                      <Text style={styles.waConnectBtnText}>
+                        Connect on WhatsApp
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.waCancelBtn}
+                      onPress={() => setShowWhatsAppDisclaimer(false)}
+                    >
+                      <Text style={styles.waCancelBtnText}>KEEP IT SECURE</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               </View>
-              <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-                <X size={20} color={isDark ? "#fff" : "#1e293b"} />
-              </TouchableOpacity>
-            </View>
+            )}
 
-            {/* Context Module */}
-            <View style={[styles.referenceModule, { 
-              backgroundColor: isDark ? "rgba(30, 41, 59, 0.5)" : "rgba(241, 245, 249, 0.9)",
-              borderColor: isDark ? "rgba(255, 255, 255, 0.08)" : "rgba(0, 0, 0, 0.05)"
-            }]}>
-              <Image source={{ uri: listing?.image || convData?.listingImage }} style={styles.refImage} />
-              <View style={styles.refMeta}>
-                <Text style={[styles.refTitle, { color: isDark ? "#f1f5f9" : "#334155" }]} numberOfLines={1}>
-                  {listing?.title || convData?.listingTitle}
-                </Text>
-                <Text style={styles.priceText}>{listing?.price || convData?.listingPrice}</Text>
+            {/* Header Panel */}
+            <View style={styles.headerPanel}>
+              <View style={styles.headerLeft}>
+                <View style={styles.avatarNodeWrapper}>
+                  {otherUser?.avatarUrl ? (
+                    <Image
+                      source={{ uri: otherUser.avatarUrl }}
+                      style={styles.avatarNodeImg}
+                    />
+                  ) : (
+                    <Text style={styles.avatarNodeTextPlaceholder}>
+                      {(otherUser?.name || listing.agent?.name || "A").charAt(
+                        0,
+                      )}
+                    </Text>
+                  )}
+                  <View style={styles.avatarActiveDot} />
+                </View>
+                <View style={styles.headerMetaColumn}>
+                  <View style={styles.metaTitleRow}>
+                    <Text style={styles.headerNodeName} numberOfLines={1}>
+                      {otherUser?.name || listing.agent?.name}
+                    </Text>
+                    {otherUser?.verificationLevel && (
+                      <VerificationBadge
+                        level={otherUser.verificationLevel}
+                        role={otherUser.role}
+                        showText={false}
+                      />
+                    )}
+                  </View>
+                  <View style={styles.activeLabelRow}>
+                    <View style={styles.pulseDot} />
+                    <Text style={styles.activeNodeText}>
+                      Active Secure Node
+                    </Text>
+                  </View>
+                </View>
               </View>
-              {currentUser?.role !== "agent" && (
+              {currentUser.role === "tenant" ? (
                 <View style={styles.headerActionRow}>
-                  <TouchableOpacity onPress={handleMakePayment} style={styles.payBtn}>
-                    <Text style={styles.payBtnText}>Pay</Text>
+                  <TouchableOpacity
+                    style={styles.headerPaymentLabelBtn}
+                    onPress={() => setShowPaymentModal(true)}
+                  >
+                    <Text style={styles.headerPaymentLabelText}>Payment</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.headerActionBtn, { marginLeft: 8 }]}
+                    onPress={handleReportUser}
+                  >
+                    <User size={16} color="#7f1d1d" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.closeModalBtn, { marginLeft: 8 }]}
+                    onPress={onClose}
+                  >
+                    <X size={20} color="#94a3b8" />
                   </TouchableOpacity>
                 </View>
+              ) : (
+                <TouchableOpacity
+                  style={styles.closeModalBtn}
+                  onPress={onClose}
+                >
+                  <X size={20} color="#94a3b8" />
+                </TouchableOpacity>
               )}
             </View>
 
-            {/* Message Feed Canvas */}
-            <View style={styles.messagesWrap}>
+            {/* Referenced Property Sub-Banner */}
+            <View style={styles.propertyReferenceBanner}>
+              <View style={styles.propertyImageFrame}>
+                <SafeImage
+                  src={listing.image}
+                  style={styles.propertyFrameImg}
+                />
+              </View>
+              <View style={styles.propertyMetaContext}>
+                <Text style={styles.propertyRefLabel}>Referenced Rental</Text>
+                <Text style={styles.propertyTitleContext} numberOfLines={1}>
+                  {listing.title}
+                </Text>
+              </View>
+              <View style={styles.propertyPriceTag}>
+                <Text style={styles.propertyPriceText}>
+                  {listing?.price
+                    ? listing.price
+                    : formatCurrency(apartmentFee)}
+                </Text>
+              </View>
+            </View>
+
+            {/* Dynamic Transaction Action Triggers */}
+            <View style={styles.actionTriggersScrollWrapper}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.actionHorizontalScroll}
+              >
+                {currentUser.role === "tenant" && (
+                  <>
+                    {(convStatus === "inquiry" ||
+                      convStatus === "negotiating") && (
+                      <TouchableOpacity
+                        style={styles.actionBtnPrimary}
+                        onPress={() =>
+                          handleAction(
+                            "contract_requested",
+                            "I'd like to request a formal contract for this property.",
+                            "contract_requested",
+                          )
+                        }
+                      >
+                        <FileText
+                          size={14}
+                          color="#4338ca"
+                          style={{ marginRight: 6 }}
+                        />
+                        <Text style={styles.actionBtnPrimaryText}>
+                          Request Contract
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                    {convStatus === "contract_sent" && (
+                      <TouchableOpacity
+                        style={styles.actionBtnSuccess}
+                        onPress={() =>
+                          handleAction(
+                            "paid",
+                            "Payment of security deposit has been initiated.",
+                            "paid",
+                          )
+                        }
+                      >
+                        <CreditCard
+                          size={14}
+                          color="#047857"
+                          style={{ marginRight: 6 }}
+                        />
+                        <Text style={styles.actionBtnSuccessText}>
+                          Pay Deposit
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </>
+                )}
+
+                {currentUser.role === "agent" && (
+                  <>
+                    {convStatus === "contract_requested" && (
+                      <TouchableOpacity
+                        style={styles.actionBtnSolidPrimary}
+                        onPress={() =>
+                          handleAction(
+                            "contract_sent",
+                            "I have prepared and sent the draft contract for your review.",
+                            "contract_sent",
+                          )
+                        }
+                      >
+                        <FileText
+                          size={14}
+                          color="#ffffff"
+                          style={{ marginRight: 6 }}
+                        />
+                        <Text style={styles.actionBtnSolidPrimaryText}>
+                          Send Contract
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                    {convStatus === "paid" && (
+                      <TouchableOpacity
+                        style={styles.actionBtnSolidSuccess}
+                        onPress={() =>
+                          handleAction(
+                            "completed",
+                            "Transaction completed successfully. Welcome to your new home!",
+                            "completed",
+                          )
+                        }
+                      >
+                        <CheckCircle2
+                          size={14}
+                          color="#ffffff"
+                          style={{ marginRight: 6 }}
+                        />
+                        <Text style={styles.actionBtnSolidSuccessText}>
+                          Close Transaction
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </>
+                )}
+
+                <TouchableOpacity
+                  style={styles.actionBtnSecondary}
+                  onPress={() => {}}
+                >
+                  <Text style={styles.actionBtnSecondaryText}>
+                    Negotiate Rent
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.actionBtnWhatsApp}
+                  onPress={handleWhatsAppTransition}
+                >
+                  <MessageCircle
+                    size={14}
+                    color="#047857"
+                    style={{ marginRight: 6 }}
+                  />
+                  <Text style={styles.actionBtnWhatsAppText}>
+                    Continue on WhatsApp
+                  </Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+
+            {/* Privacy Disclosure Notice */}
+            {showPrivacyBanner && (
+              <View style={styles.privacyBanner}>
+                <View style={styles.privacyIconWrapper}>
+                  <ShieldCheck size={18} color="#d97706" />
+                </View>
+                <Text style={styles.privacyBannerBodyText}>
+                  We keep a history of your chats for safety and quality
+                  assurance. Please note that security protections only apply to
+                  interactions within the DirectRent app.
+                </Text>
+                <TouchableOpacity onPress={() => setShowPrivacyBanner(false)}>
+                  <X size={14} color="#a16207" />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Core Messages Stream */}
+            <View
+              style={[
+                styles.chatStreamContainer,
+                { paddingBottom: 100 + keyboardOffset },
+              ]}
+            >
+              {error && (
+                <View style={styles.errorBanner}>
+                  <Text style={styles.errorBannerText}>{error}</Text>
+                </View>
+              )}
+
               {isLoading ? (
-                <ActivityIndicator size="large" color="#059669" style={{ marginTop: 40 }} />
+                <View style={styles.streamLoadingContainer}>
+                  <ActivityIndicator size="small" color="#3b82f6" />
+                  <Text style={styles.streamLoadingText}>
+                    Securing Connection
+                  </Text>
+                </View>
+              ) : messages.length === 0 ? (
+                <View style={styles.emptyStreamContainer}>
+                  <View style={styles.emptyIconContainer}>
+                    <MessageSquare size={26} color="#94a3b8" />
+                  </View>
+                  <Text style={styles.emptyStreamTitle}>
+                    No conversation history
+                  </Text>
+                  <Text style={styles.emptyStreamDesc}>
+                    We keep a history of your chats for safety and quality
+                    assurance. Please note that security protections only apply
+                    to interactions within the DirectRent app.
+                  </Text>
+                </View>
               ) : (
                 <FlatList
                   ref={flatListRef}
                   data={messages}
-                  renderItem={renderMessage}
-                  keyExtractor={(item, index) => item?.id || index.toString()}
-                  contentContainerStyle={{ padding: 16 }}
+                  keyExtractor={(item) => item.id}
+                  renderItem={renderMessageItem}
+                  contentContainerStyle={styles.flatListContent}
+                  onContentSizeChange={() =>
+                    flatListRef.current?.scrollToEnd({ animated: true })
+                  }
+                  onLayout={() =>
+                    flatListRef.current?.scrollToEnd({ animated: true })
+                  }
+                  keyboardShouldPersistTaps="handled"
+                  keyboardDismissMode="on-drag"
                 />
               )}
             </View>
 
-            {/* Input Footer System */}
-            <View style={[styles.glassInputFooter, { 
-              backgroundColor: isDark ? "rgba(15, 23, 42, 0.94)" : "rgba(248, 250, 252, 0.95)",
-              borderColor: isDark ? "rgba(255, 255, 255, 0.12)" : "rgba(15, 23, 42, 0.08)"
-            }]}>
-              
-              {emojiVisible && (
-                <View style={[styles.emojiTrayWrap, { backgroundColor: isDark ? "rgba(30, 41, 59, 0.96)" : "rgba(255, 255, 255, 0.98)" }]}>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                    {emojis.map((e) => (
-                      <TouchableOpacity key={e} onPress={() => { setNewMessage((s) => s + e); setEmojiVisible(false); }} style={styles.emojiButton}>
-                        <Text style={styles.emojiText}>{e}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </ScrollView>
-                </View>
-              )}
+            {/* Interaction Processing Input Console */}
+            <View
+              style={[
+                styles.inputConsolePanel,
+                {
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  bottom: keyboardOffset,
+                  elevation: 20,
+                  zIndex: 50,
+                },
+              ]}
+            >
+              <View style={styles.consoleRowContainer}>
+                {/* single-row input + send button to remove gap */}
+                <View style={{ flexDirection: "row", alignItems: "center" }}>
+                  {isRecording ? (
+                    <View style={styles.recordingConsolePanel}>
+                      <View style={styles.recordingIndicatorPill}>
+                        <View style={styles.recordingLiveRedPulse} />
+                        <Text style={styles.recordingDurationClock}>
+                          {Math.floor(recordingTime / 60)}:
+                          {Math.floor(recordingTime % 60)
+                            .toString()
+                            .padStart(2, "0")}
+                        </Text>
+                      </View>
 
-              <View style={styles.inputRow}>
-                <TouchableOpacity onPress={pickDocument} style={styles.iconAction}>
-                  <Paperclip size={21} color={isDark ? "#94a3b8" : "#475569"} />
-                </TouchableOpacity>
-
-                <TouchableOpacity onPress={() => setEmojiVisible((v) => !v)} style={styles.iconAction}>
-                  <Smile size={21} color={isDark ? "#94a3b8" : "#475569"} />
-                </TouchableOpacity>
-
-                <TextInput
-                  value={newMessage}
-                  onChangeText={setNewMessage}
-                  placeholder="Type a message..."
-                  placeholderTextColor={isDark ? "rgba(255, 255, 255, 0.45)" : "rgba(15, 23, 42, 0.5)"}
-                  style={[styles.textInput, { 
-                    backgroundColor: isDark ? "rgba(0, 0, 0, 0.4)" : "#ffffff",
-                    color: isDark ? "#fff" : "#0f172a",
-                    borderColor: isDark ? "rgba(255, 255, 255, 0.1)" : "rgba(15, 23, 42, 0.15)"
-                  }]}
-                  editable={!isSending}
-                />
-
-                <View style={styles.actionGroup}>
-                  {newMessage.trim().length > 0 ? (
-                    <TouchableOpacity onPress={() => sendTextMessage(newMessage)} style={styles.sendActionButton}>
-                      <Send size={18} color="#fff" />
-                    </TouchableOpacity>
+                      <View style={styles.waveVisualizerTrack}>
+                        {visualizerLevels.map((lvl, i) => (
+                          <View
+                            key={`vbar-${i}`}
+                            style={[
+                              styles.visualizerVerticalBar,
+                              { height: lvl },
+                              i % 2 === 0
+                                ? styles.vBarPrimary
+                                : styles.vBarSecondary,
+                            ]}
+                          />
+                        ))}
+                      </View>
+                    </View>
                   ) : (
-                    <TouchableOpacity onPress={isRecording ? stopRecordingAndSend : startRecording} style={[styles.sendActionButton, isRecording && styles.recordingActive]}>
-                      {isRecording ? <Square size={16} color="#fff" /> : <Mic size={18} color="#fff" />}
-                    </TouchableOpacity>
+                    <TextInput
+                      value={newMessage}
+                      onChangeText={setNewMessage}
+                      placeholder="Message..."
+                      placeholderTextColor="#94a3b8"
+                      style={[
+                        styles.terminalTextInput,
+                        { flex: 1, marginRight: 8 },
+                      ]}
+                      editable={!isSending}
+                      onFocus={() =>
+                        flatListRef.current?.scrollToEnd({ animated: true })
+                      }
+                    />
                   )}
+
+                  <TouchableOpacity
+                    style={[
+                      styles.consoleSendBtn,
+                      newMessage.trim()
+                        ? styles.consoleSendBtnActive
+                        : styles.consoleSendBtnDisabled,
+                    ]}
+                    onPress={handleSendMessage}
+                    disabled={!newMessage.trim() || isSending}
+                  >
+                    <ChevronRight
+                      size={20}
+                      color="#ffffff"
+                      style={{ strokeWidth: 3 }}
+                    />
+                  </TouchableOpacity>
                 </View>
               </View>
             </View>
 
-          </KeyboardAvoidingView>
-        </SafeAreaView>
+            {/* Payment Modal */}
+            {showPaymentModal && (
+              <View style={styles.paymentModalBackdrop}>
+                <View style={styles.paymentModalCard}>
+                  {!paymentConfirmed ? (
+                    <>
+                      <Text style={styles.paymentModalTitle}>
+                        Confirm Payment
+                      </Text>
+                      <Text style={styles.paymentModalSubtitle}>
+                        {listing?.title}
+                      </Text>
+
+                      <View style={styles.paymentBreakdownRow}>
+                        <Text style={styles.paymentLabel}>Apartment Fee</Text>
+                        <Text style={styles.paymentValue}>
+                          {formatCurrency(apartmentFee)}
+                        </Text>
+                      </View>
+
+                      <View style={styles.paymentBreakdownRow}>
+                        <Text style={styles.paymentLabel}>Service Fee</Text>
+                        <Text style={styles.paymentValue}>
+                          {formatCurrency(serviceFee)}
+                        </Text>
+                      </View>
+
+                      <View style={styles.paymentBreakdownRowTotal}>
+                        <Text style={styles.paymentTotalLabel}>Total</Text>
+                        <Text style={styles.paymentTotalValue}>
+                          {formatCurrency(total)}
+                        </Text>
+                      </View>
+
+                      <View style={styles.paymentActionsRow}>
+                        <TouchableOpacity
+                          style={styles.paymentCancelBtn}
+                          onPress={() => setShowPaymentModal(false)}
+                          disabled={paymentProcessing}
+                        >
+                          <Text style={styles.paymentCancelText}>Cancel</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={[
+                            styles.paymentConfirmBtn,
+                            paymentProcessing && { opacity: 0.7 },
+                          ]}
+                          onPress={async () => {
+                            setPaymentProcessing(true);
+                            try {
+                              // simulate calling existing pay handler
+                              await handlePayNow();
+                              // simulate small delay for UX
+                              await new Promise((r) => setTimeout(r, 550));
+                              setPaymentConfirmed(true);
+                            } catch (e) {
+                              console.error("Payment flow error", e);
+                              setError("Failed to process payment.");
+                            } finally {
+                              setPaymentProcessing(false);
+                            }
+                          }}
+                        >
+                          <Text style={styles.paymentConfirmText}>Pay</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </>
+                  ) : (
+                    <View style={styles.paymentConfirmedInner}>
+                      <View style={styles.confirmTickCircle}>
+                        <Text style={styles.confirmTick}>✓</Text>
+                      </View>
+                      <Text style={styles.paymentSuccessText}>
+                        Payment Confirmed
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.paymentDoneBtn}
+                        onPress={() => {
+                          setPaymentConfirmed(false);
+                          setShowPaymentModal(false);
+                        }}
+                      >
+                        <Text style={styles.paymentDoneText}>Done</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </View>
+              </View>
+            )}
+          </View>
+        </KeyboardAvoidingView>
       </View>
     </Modal>
   );
 };
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
-  modalOverlay: { flex: 1, justifyContent: "flex-end" },
-  glassContainer: { flex: 1 },
-  glassHeader: {
-    flexDirection: "row",
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    alignItems: "center",
-    justifyContent: "space-between",
-    borderBottomWidth: 1,
-  },
-  headerLeft: { flexDirection: "row", alignItems: "center" },
-  avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "rgba(5, 150, 105, 0.15)",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 12,
-  },
-  avatarImage: { width: "100%", height: "100%", borderRadius: 20 },
-  avatarText: { fontWeight: "700", color: "#059669" },
-  title: { fontWeight: "600", fontSize: 16 },
-  status: { fontSize: 12, color: "#10b981", fontWeight: "500", marginTop: 1 },
-  closeButton: { padding: 4 },
-  referenceModule: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: 12,
-    marginHorizontal: 16,
-    marginTop: 12,
-    borderRadius: 20,
-    borderWidth: 1,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.04,
-    shadowRadius: 10,
-    elevation: 2,
-  },
-  refImage: { width: 44, height: 44, borderRadius: 8, marginRight: 12 },
-  refMeta: { flex: 1 },
-  refTitle: { fontWeight: "500", fontSize: 14 },
-  priceText: { color: "#10b981", fontWeight: "600", fontSize: 13, marginTop: 2 },
-  headerActionRow: { flexDirection: "row" },
-  payBtn: { backgroundColor: "#10b981", paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20 },
-  payBtnText: { color: "#fff", fontWeight: "600", fontSize: 13 },
-  messagesWrap: { flex: 1 },
-  bubble: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    marginVertical: 4,
-    borderRadius: 20,
-    maxWidth: "80%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 1,
-  },
-  bubbleLeft: {
-    backgroundColor: "rgba(241, 245, 249, 0.9)",
-    alignSelf: "flex-start",
-    borderTopLeftRadius: 4,
-    borderColor: "rgba(0,0,0,0.04)",
-    borderWidth: 1,
-  },
-  bubbleRight: {
-    backgroundColor: "#059669",
-    alignSelf: "flex-end",
-    borderTopRightRadius: 4,
-  },
-  bubbleTextLeft: { color: "#0f172a", fontSize: 15, lineHeight: 20 },
-  bubbleTextRight: { color: "#fff", fontSize: 15, lineHeight: 20 },
-  textMetaContainer: {
-    flexDirection: "row",
-    alignItems: "center",
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.6)",
     justifyContent: "flex-end",
-    marginTop: 4,
   },
-  bubbleTime: { fontSize: 10, marginRight: 3 },
-  ticks: { marginLeft: 2, marginBottom: -1 },
-  whatsappAudioRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 2,
+  modalContentContainer: {
+    backgroundColor: "#ffffff",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    height: SCREEN_HEIGHT * 0.85,
+    overflow: "hidden",
   },
-  voiceAvatarContainer: {
-    position: "relative",
-    marginRight: 10,
-    width: 36,
-    height: 36,
+  modalAvoidingView: {
+    flex: 1,
+    justifyContent: "flex-end",
   },
-  voiceAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-  },
-  voiceAvatarPlaceholder: {
-    backgroundColor: "rgba(0,0,0,0.1)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  voiceAvatarTxt: {
-    fontSize: 12,
-    fontWeight: "bold",
-  },
-  waPlayButton: {
+  disclaimerWrapper: {
     position: "absolute",
     top: 0,
     left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(15, 23, 42, 0.6)",
+    zIndex: 100,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  disclaimerCard: {
+    width: "100%",
+    maxWidth: 320,
+    backgroundColor: "#ffffff",
+    padding: 24,
+    borderRadius: 24,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.1,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  disclaimerIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: "#ecfdf5",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
+  },
+  disclaimerTitle: {
+    fontSize: 16,
+    fontWeight: "900",
+    color: "#0f172a",
+    textAlign: "center",
+    marginBottom: 8,
+  },
+  disclaimerBody: {
+    fontSize: 12,
+    color: "#64748b",
+    textAlign: "center",
+    marginBottom: 24,
+    lineHeight: 18,
+  },
+  disclaimerActionColumn: {
+    width: "100%",
+    gap: 8,
+  },
+  waConnectBtn: {
+    width: "100%",
+    backgroundColor: "#059669",
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  waConnectBtnText: {
+    color: "#ffffff",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  waCancelBtn: {
+    width: "100%",
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  waCancelBtnText: {
+    color: "#94a3b8",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 1,
+  },
+  headerPanel: {
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderColor: "#f1f5f9",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#ffffff",
+  },
+  headerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
+  avatarNodeWrapper: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "#f8fafc",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    overflow: "hidden",
+    position: "relative",
+  },
+  avatarNodeImg: {
+    width: "100%",
+    height: "100%",
+    resizeMode: "cover",
+  },
+  avatarNodeTextPlaceholder: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#2563eb",
+  },
+  avatarActiveDot: {
+    position: "absolute",
+    bottom: 0,
+    right: 0,
+    width: 10,
+    height: 10,
+    backgroundColor: "#10b981",
+    borderRadius: 5,
+    borderWidth: 2,
+    borderColor: "#ffffff",
+  },
+  headerMetaColumn: {
+    marginLeft: 12,
+    flex: 1,
+  },
+  metaTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 2,
+  },
+  headerNodeName: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#0f172a",
+    marginRight: 6,
+    maxWidth: "70%",
+  },
+  activeLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  pulseDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#10b981",
+    marginRight: 6,
+  },
+  activeNodeText: {
+    fontSize: 9,
+    fontWeight: "900",
+    color: "#94a3b8",
+    letterSpacing: 0.5,
+  },
+  closeModalBtn: {
     width: 36,
     height: 36,
-    borderRadius: 18,
-    backgroundColor: "rgba(0,0,0,0.35)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  waAudioTimeline: {
-    flex: 1,
-    justifyContent: "center",
-  },
-  waProgressContainer: {
-    paddingVertical: 6,
-  },
-  waProgressBackground: {
-    height: 3,
-    borderRadius: 2,
-    overflow: "hidden",
-  },
-  waProgressFill: {
-    height: "100%",
-  },
-  waAudioMetaRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginTop: 2,
-  },
-  waAudioTime: {
-    fontSize: 11,
-  },
-  timeAndTicksRow: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  waSpeedBadge: {
-    paddingHorizontal: 7,
-    paddingVertical: 3,
     borderRadius: 10,
-    marginLeft: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#f8fafc",
   },
-  waSpeedText: {
-    fontSize: 11,
-    fontWeight: "600",
-  },
-  glassInputFooter: {
-    padding: 12,
-    borderTopWidth: 1,
-  },
-  inputRow: { flexDirection: "row", alignItems: "center" },
-  iconAction: { padding: 6, marginRight: 4 },
-  textInput: {
-    flex: 1,
-    borderWidth: 1,
+  propertyReferenceBanner: {
     paddingHorizontal: 16,
     paddingVertical: 10,
-    borderRadius: 24,
-    marginHorizontal: 8,
-    fontSize: 15,
+    backgroundColor: "#f8fafc",
+    borderBottomWidth: 1,
+    borderColor: "#f1f5f9",
+    flexDirection: "row",
+    alignItems: "center",
   },
-  actionGroup: { marginLeft: 2 },
-  sendActionButton: {
-    backgroundColor: "#059669",
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+  propertyImageFrame: {
+    width: 38,
+    height: 38,
+    borderRadius: 8,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+  propertyFrameImg: {
+    width: "100%",
+    height: "100%",
+    resizeMode: "cover",
+  },
+  propertyMetaContext: {
+    marginLeft: 12,
+    flex: 1,
+  },
+  propertyRefLabel: {
+    fontSize: 8,
+    fontWeight: "900",
+    color: "#94a3b8",
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    marginBottom: 2,
+  },
+  propertyTitleContext: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#334155",
+  },
+  propertyPriceTag: {
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#f1f5f9",
+  },
+  propertyPriceText: {
+    fontSize: 11,
+    fontWeight: "900",
+    color: "#2563eb",
+  },
+  actionTriggersScrollWrapper: {
+    backgroundColor: "#ffffff",
+    borderBottomWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+  actionHorizontalScroll: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  actionBtnPrimary: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "#e0e7ff",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#c7d2fe",
+  },
+  actionBtnPrimaryText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#3730a3",
+  },
+  actionBtnSuccess: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "#d1fae5",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#a7f3d0",
+  },
+  actionBtnSuccessText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#065f46",
+  },
+  actionBtnSolidPrimary: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "#2563eb",
+    borderRadius: 10,
+  },
+  actionBtnSolidPrimaryText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#ffffff",
+  },
+  actionBtnSolidSuccess: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "#10b981",
+    borderRadius: 10,
+  },
+  actionBtnSolidSuccessText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#ffffff",
+  },
+  actionBtnSecondary: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "#f8fafc",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+  actionBtnSecondaryText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#475569",
+  },
+  actionBtnWhatsApp: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "#f0fdf4",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#dcfce7",
+  },
+  actionBtnWhatsAppText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#166534",
+  },
+  privacyBanner: {
+    backgroundColor: "#fffbeb",
+    borderBottomWidth: 1,
+    borderColor: "#fef3c7",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+  privacyIconWrapper: {
+    marginRight: 8,
+    marginTop: 2,
+  },
+  privacyBannerBodyText: {
+    flex: 1,
+    fontSize: 11,
+    color: "#92400e",
+    lineHeight: 16,
+    fontWeight: "500",
+    paddingRight: 8,
+  },
+  chatStreamContainer: {
+    flex: 1,
+    backgroundColor: "rgba(248, 250, 252, 0.4)",
+  },
+  errorBanner: {
+    padding: 10,
+    backgroundColor: "#fff1f2",
+    borderBottomWidth: 1,
+    borderColor: "#ffe4e6",
+  },
+  errorBannerText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#e11d48",
+    textAlign: "center",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  streamLoadingContainer: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#059669",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 6,
-    elevation: 3,
+    gap: 8,
   },
-  recordingActive: {
-    backgroundColor: "#ef4444",
-    shadowColor: "#ef4444",
+  streamLoadingText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#94a3b8",
+    textTransform: "uppercase",
+    letterSpacing: 1.5,
   },
-  emojiTrayWrap: {
-    position: "absolute",
-    bottom: 68,
-    left: 12,
-    right: 12,
+  emptyStreamContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 32,
+  },
+  emptyIconContainer: {
+    width: 56,
+    height: 56,
     borderRadius: 16,
-    padding: 8,
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
+    borderColor: "#e2e8f0",
+    marginBottom: 16,
   },
-  emojiButton: { padding: 6, marginRight: 8 },
-  emojiText: { fontSize: 20 },
+  emptyStreamTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0f172a",
+    marginBottom: 6,
+  },
+  emptyStreamDesc: {
+    fontSize: 11,
+    color: "#94a3b8",
+    textAlign: "center",
+    lineHeight: 16,
+  },
+  flatListContent: {
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    gap: 12,
+  },
+  messageRow: {
+    flexDirection: "row",
+    width: "100%",
+  },
+  justifyEnd: {
+    justifyContent: "flex-end",
+  },
+  justifyStart: {
+    justifyContent: "flex-start",
+  },
+  bubble: {
+    maxWidth: "85%",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  bubbleOwn: {
+    backgroundColor: "#3b82f6",
+    borderBottomRightRadius: 0,
+  },
+  bubbleOther: {
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    borderBottomLeftRadius: 0,
+  },
+  bubbleText: {
+    fontSize: 14,
+    lineHeight: 19,
+  },
+  textWhite: {
+    color: "#ffffff",
+  },
+  textDark: {
+    color: "#1e293b",
+  },
+  actionMessageContainer: {
+    alignSelf: "center",
+    width: "90%",
+    backgroundColor: "rgba(238, 242, 255, 0.5)",
+    borderWidth: 1,
+    borderColor: "rgba(224, 231, 255, 0.8)",
+    padding: 14,
+    borderRadius: 16,
+    alignItems: "center",
+    marginVertical: 12,
+  },
+  actionIconWrapper: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 8,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  actionUpdateLabel: {
+    fontSize: 10,
+    fontWeight: "900",
+    color: "#4f46e5",
+    textTransform: "uppercase",
+    letterSpacing: 1.5,
+    marginBottom: 4,
+  },
+  actionContentText: {
+    fontSize: 12,
+    color: "#334155",
+    fontWeight: "500",
+    textAlign: "center",
+    lineHeight: 16,
+  },
+  actionBlockFooter: {
+    fontSize: 8,
+    fontWeight: "900",
+    color: "#94a3b8",
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    marginTop: 6,
+  },
+  audioContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 10,
+    borderRadius: 22,
+    width: 240,
+    justifyContent: "space-between",
+  },
+  audioOwn: {
+    backgroundColor: "#3b82f6",
+  },
+  audioOther: {
+    backgroundColor: "#f1f5f9",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+  audioWaveformWrapper: {
+    flex: 1,
+    marginRight: 12,
+  },
+  waveformBarsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    height: 20,
+    marginBottom: 2,
+  },
+  waveformBar: {
+    width: 2,
+    borderRadius: 1,
+  },
+  barActiveOwn: {
+    backgroundColor: "#ffffff",
+  },
+  barActiveOther: {
+    backgroundColor: "#3b82f6",
+  },
+  barInactiveOwn: {
+    backgroundColor: "rgba(255, 255, 255, 0.3)",
+  },
+  barInactiveOther: {
+    backgroundColor: "#cbd5e1",
+  },
+  audioTimeText: {
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  textWhiteMuted: {
+    color: "rgba(255, 255, 255, 0.8)",
+  },
+  textSlateMuted: {
+    color: "#64748b",
+  },
+  audioPlayBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  audioPlayBtnOwn: {
+    backgroundColor: "#ffffff",
+  },
+  audioPlayBtnOther: {
+    backgroundColor: "#3b82f6",
+  },
+  inputConsolePanel: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#ffffff",
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    elevation: 20,
+    zIndex: 50,
+  },
+
+  /* Layout for the input row: force a horizontal layout so the send button sits beside the input */
+  consoleRowContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+
+  /* Input area should take remaining space */
+  inputFlexibleSlot: {
+    flex: 1,
+    marginRight: 8,
+  },
+
+  /* Action group holds mic / send buttons */
+  consoleActionGroup: {
+    width: 96,
+    alignItems: "flex-end",
+    justifyContent: "center",
+  },
+
+  headerActionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginRight: 8,
+  },
+
+  /* layout for small inline action buttons */
+  actionButtonsInlineRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  consoleMicBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#f8fafc",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+  consoleTrashBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#fee2e2",
+    marginRight: 8,
+  },
+  consoleSendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#3b82f6",
+  },
+  consoleSendBtnDisabled: {
+    backgroundColor: "#94a3b8",
+    opacity: 0.9,
+  },
+  consoleSendBtnActive: {
+    backgroundColor: "#2563eb",
+  },
+  terminalTextInput: {
+    height: 44,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: "#f8fafc",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    color: "#0f172a",
+  },
+
+  /* Recording panel - keep same height as text input so layout doesn't grow */
+  recordingConsolePanel: {
+    height: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    backgroundColor: "#f8fafc",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+  recordingIndicatorPill: {
+    minWidth: 72,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+    flexDirection: "row",
+  },
+  recordingLiveRedPulse: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#ef4444",
+    marginRight: 8,
+  },
+  recordingDurationClock: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#0f172a",
+  },
+  waveVisualizerTrack: {
+    flex: 1,
+    height: 20,
+    marginHorizontal: 8,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  visualizerVerticalBar: {
+    width: 2,
+    borderRadius: 1,
+    marginHorizontal: 1,
+  },
+  vBarPrimary: {
+    backgroundColor: "#3b82f6",
+  },
+  vBarSecondary: {
+    backgroundColor: "#cbd5e1",
+  },
+  /* Payment button & modal styles */
+  headerPaymentLabelBtn: {
+    backgroundColor: "#ecfdf5",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#bbf7d0",
+  },
+  headerPaymentLabelText: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#065f46",
+  },
+  paymentModalBackdrop: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    top: 0,
+    backgroundColor: "rgba(15, 23, 42, 0.6)",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 200,
+  },
+  paymentModalCard: {
+    width: "90%",
+    backgroundColor: "#ffffff",
+    padding: 18,
+    borderRadius: 14,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.1,
+    shadowRadius: 20,
+    elevation: 12,
+  },
+  paymentModalTitle: {
+    fontSize: 16,
+    fontWeight: "900",
+    color: "#0f172a",
+    marginBottom: 4,
+  },
+  paymentModalSubtitle: {
+    fontSize: 12,
+    color: "#64748b",
+    marginBottom: 12,
+  },
+  paymentBreakdownRow: {
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderColor: "#f1f5f9",
+  },
+  paymentLabel: {
+    fontSize: 13,
+    color: "#334155",
+    fontWeight: "700",
+  },
+  paymentValue: {
+    fontSize: 13,
+    color: "#0f172a",
+    fontWeight: "900",
+  },
+  paymentActionsRow: {
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 12,
+  },
+  paymentCancelBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  paymentCancelText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#0f172a",
+  },
+  paymentConfirmBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    alignItems: "center",
+    borderRadius: 10,
+    backgroundColor: "#065f46",
+    minWidth: 96,
+  },
+  paymentConfirmText: {
+    fontSize: 13,
+    fontWeight: "900",
+    color: "#ffffff",
+  },
+  paymentConfirmedInner: {
+    alignItems: "center",
+    paddingVertical: 12,
+  },
+  confirmTickCircle: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: "#ecfdf5",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  confirmTick: {
+    fontSize: 36,
+    color: "#065f46",
+    fontWeight: "900",
+  },
+  paymentSuccessText: {
+    fontSize: 15,
+    fontWeight: "900",
+    color: "#065f46",
+    marginBottom: 12,
+  },
+  paymentDoneBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    borderRadius: 10,
+  },
+  paymentDoneText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#0f172a",
+  },
 });
 
 export default ChatModal;

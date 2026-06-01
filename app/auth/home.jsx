@@ -23,6 +23,8 @@ import {
 } from "firebase/auth";
 import * as WebBrowser from "expo-web-browser";
 import * as Google from "expo-auth-session/providers/google";
+import * as AuthSession from "expo-auth-session";
+import Constants from "expo-constants";
 import { firebaseConfig } from "../../lib/firebase";
 WebBrowser.maybeCompleteAuthSession();
 
@@ -37,20 +39,27 @@ export default function Home() {
   const [error, setError] = useState("");
   const [googleLoading, setGoogleLoading] = useState(false);
 
-  // Configure Google auth request using client IDs from firebaseConfig if available
+  // FIXED: Removed the self-referencing circular dependency on clientConfig
   const clientConfig = {
     expoClientId:
       firebaseConfig?.expoClientId || firebaseConfig?.webClientId || "",
     iosClientId: firebaseConfig?.iosClientId || "",
     androidClientId: firebaseConfig?.androidClientId || "",
-    webClientId: clientConfig?.webClientId || firebaseConfig?.apiKey || "",
+    webClientId: firebaseConfig?.webClientId || firebaseConfig?.apiKey || "",
   };
+
+  // detect whether to use Expo proxy (Expo Go / dev-client) or native redirect
+  const useProxy =
+    Constants.appOwnership === "expo" || Constants.appOwnership === "guest";
+  const redirectUri = AuthSession.makeRedirectUri({ useProxy });
+  console.info("Google redirectUri:", redirectUri);
 
   const [request, response, promptAsync] = Google.useAuthRequest({
     expoClientId: clientConfig.expoClientId,
     iosClientId: clientConfig.iosClientId,
     androidClientId: clientConfig.androidClientId,
     webClientId: clientConfig.webClientId,
+    redirectUri,
     scopes: ["profile", "email"],
   });
 
@@ -59,10 +68,18 @@ export default function Home() {
       if (response?.type === "success") {
         setGoogleLoading(true);
         try {
-          const { id_token } = response.params;
-          if (!id_token) throw new Error("No id_token from Google");
-          const credential = GoogleAuthProvider.credential(id_token);
+          // FIXED: Extracted the idToken correctly from response.authentication
+          const idToken = response.authentication?.idToken;
+
+          if (!idToken) {
+            throw new Error(
+              "No idToken received from authentication provider.",
+            );
+          }
+
+          const credential = GoogleAuthProvider.credential(idToken);
           const res = await signInWithCredential(auth, credential);
+
           // after sign-in, check email verification
           const user = res.user || auth.currentUser;
           if (user) {
@@ -100,12 +117,9 @@ export default function Home() {
 
     setIsLoading(true);
     try {
-      // Direct login logic from your Auth_2.tsx
       await signInWithEmailAndPassword(auth, email, password);
-      // Navigate to dashboard after successful login
       router.replace("/app/dashboard");
     } catch (error) {
-      // Handling common Firebase errors
       let errorMessage = "Incorrect Email/Password";
       if (error?.code === "auth/user-not-found")
         errorMessage = "No account found with this email.";
@@ -131,7 +145,6 @@ export default function Home() {
           style={{ flex: 1 }}
           behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
-          {/* Main content (card removed) */}
           <View style={styles.content}>
             <View style={styles.logoCenter}>
               <Image
@@ -209,17 +222,16 @@ export default function Home() {
               {/* OR separator */}
               <View style={styles.orRow}>
                 <View style={styles.orLine} />
-                <Text style={styles.orText}>OR</Text>
+                {/* <Text style={styles.orText}>OR</Text> */}
                 <View style={styles.orLine} />
               </View>
 
-              <TouchableOpacity
+              {/* <TouchableOpacity
                 style={[
                   styles.submitButton,
                   { backgroundColor: "#db4437", marginTop: 12 },
                 ]}
                 onPress={async () => {
-                  // Prompt Google sign-in
                   setError("");
                   if (!request) {
                     Alert.alert(
@@ -230,7 +242,7 @@ export default function Home() {
                   }
                   try {
                     setGoogleLoading(true);
-                    await promptAsync();
+                    await promptAsync({ useProxy });
                   } catch (e) {
                     console.warn("promptAsync failed", e);
                     setError("Google sign-in failed to start");
@@ -244,7 +256,7 @@ export default function Home() {
                 ) : (
                   <Text style={styles.submitText}>Sign in with Google</Text>
                 )}
-              </TouchableOpacity>
+              </TouchableOpacity> */}
 
               <TouchableOpacity
                 style={styles.signupLink}
@@ -263,7 +275,6 @@ export default function Home() {
 }
 
 const styles = StyleSheet.create({
-  /* Canvas */
   container: { flex: 1, backgroundColor: "#F3F4F6" },
   centered: { flex: 1, justifyContent: "center", alignItems: "center" },
   logoCenter: { alignItems: "center", marginTop: 18, marginBottom: 8 },
@@ -281,8 +292,6 @@ const styles = StyleSheet.create({
     marginHorizontal: 12,
   },
   orText: { color: "#6b7280", fontWeight: "700" },
-
-  /* Decorative geometric shapes */
   shapeTopRight: {
     position: "absolute",
     top: -100,
@@ -305,15 +314,12 @@ const styles = StyleSheet.create({
     transform: [{ scaleX: 1.1 }],
     opacity: 0.95,
   },
-
-  /* Centered floating card */
   centerCard: {
     margin: 20,
     marginTop: 40,
     marginBottom: 40,
     borderRadius: 18,
     backgroundColor: "#ffffff",
-    // soft shadow to lift card
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.06,
@@ -321,8 +327,6 @@ const styles = StyleSheet.create({
     elevation: 6,
     flex: 1,
   },
-
-  /* Content inside card */
   content: { padding: 28, flex: 1 },
   logoImage: { width: 52, height: 52, borderRadius: 8, marginRight: 8 },
   errorText: { color: "#dc2626", marginBottom: 6, fontWeight: "600" },
@@ -356,8 +360,6 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     marginTop: 16,
   },
-
-  /* Inputs: white fields with soft borders and subtle shadow */
   input: {
     backgroundColor: "#ffffff",
     borderWidth: 1,
@@ -366,7 +368,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     fontSize: 15,
     color: "#0f172a",
-    // lightweight inner shadow effect
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.03,
@@ -388,15 +389,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: "#0f172a",
   },
-
-  /* Primary action button: dark navy */
   submitButton: {
     backgroundColor: "#2B3467",
     paddingVertical: 16,
     borderRadius: 12,
     marginTop: 28,
     alignItems: "center",
-    // subtle shadow for button
     shadowColor: "#2B3467",
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.12,

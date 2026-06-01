@@ -47,8 +47,9 @@ import { useRouter } from "expo-router";
 import { db } from "../../lib/firebase";
 import MapView, { Marker, Callout, PROVIDER_GOOGLE } from "react-native-maps";
 import * as Location from "expo-location";
-import { FEATURED_LISTINGS } from "./data";
 import ListingCard from "../../components/listingcard";
+import { BlurView } from "expo-blur"; // Native Glass Engine
+import Skeleton from "../../components/ui/Skeleton";
 
 const { width, height } = Dimensions.get("window");
 
@@ -79,35 +80,39 @@ const HomeScreen = () => {
   const isAgent = user?.role === "agent";
   const filters = ["All", "Self-Contain", "1 Bedroom Flat", "Shared"];
 
+  // Premium Cosmic Tint Palette Configuration
   const tokens = isDark
     ? {
-        background: "#0A0B0D",
-        canvas: "#071226",
-        headerBg: "#0f172a",
-        card: "#0e1520",
-        accent: "#C5A46E",
+        background: "#0d1321",
+        canvas: "#0a0e1a",
+        headerBg: "rgba(10, 14, 26, 0.85)",
+        card: "rgba(30, 41, 59, 0.25)",
+        accent: "#010205ff",
         primaryText: "#FFFFFF",
-        secondaryText: "#BFC3C8",
-        muted: "#94a3b8",
-        border: "#1e293b",
-        inputBg: "#0b1220",
+        secondaryText: "#94a3b8",
+        muted: "#64748b",
+        border: "rgba(255, 255, 255, 0.08)",
+        inputBg: "rgba(255, 255, 255, 0.03)",
       }
     : {
-        background: "#FFFFFF",
-        canvas: "#F7F8FA",
-        headerBg: "#FFFFFF",
-        card: "#F1F5FF",
-        accent: "#2B3467",
-        primaryText: "#0F172A",
+        background: "#f8fafc",
+        canvas: "#f1f5f9",
+        headerBg: "rgba(255, 255, 255, 0.85)",
+        card: "rgba(255, 255, 255, 0.5)",
+        accent: "#2563eb",
+        primaryText: "#0f172a",
         secondaryText: "#475569",
         muted: "#94a3b8",
-        border: "#f1f5f9",
-        inputBg: "#f8fafc",
+        border: "rgba(15, 23, 42, 0.06)",
+        inputBg: "rgba(15, 23, 42, 0.02)",
       };
 
   const dynamicStyles = {
-    container: { backgroundColor: tokens.background },
-    header: { backgroundColor: tokens.headerBg, borderBottomColor: tokens.border },
+    container: { backgroundColor: tokens.canvas },
+    header: {
+      backgroundColor: tokens.headerBg,
+      borderBottomColor: tokens.border,
+    },
     input: { backgroundColor: tokens.inputBg, color: tokens.primaryText },
     text: { color: tokens.primaryText },
   };
@@ -127,6 +132,9 @@ const HomeScreen = () => {
     });
     return () => unsubscribe();
   }, []);
+
+  // show skeleton flag (do NOT return early to keep hooks stable)
+  const showSkeleton = dbListings.length === 0;
 
   useEffect(() => {
     if (!user || !user.id) {
@@ -150,7 +158,7 @@ const HomeScreen = () => {
   }, [user]);
 
   const filteredListings = useMemo(() => {
-    let baseListings = [...dbListings, ...FEATURED_LISTINGS];
+    let baseListings = [...dbListings];
     const seenIds = new Set();
     baseListings = baseListings.filter((l) => {
       if (seenIds.has(String(l.id))) return false;
@@ -175,7 +183,6 @@ const HomeScreen = () => {
       const q = (searchQuery || "").toString().toLowerCase();
       const matchesSearch = title.includes(q) || location.includes(q);
 
-      // normalize types for comparison (remove spacing/punctuation and lowercase)
       const listingTypeNorm = (listing.type || "")
         .toString()
         .toLowerCase()
@@ -218,10 +225,9 @@ const HomeScreen = () => {
     }
   };
 
-  // helper: compute distance (meters) between two lat/lng points (Haversine)
   const distanceMeters = (lat1, lon1, lat2, lon2) => {
     const toRad = (v) => (v * Math.PI) / 180;
-    const R = 6371000; // meters
+    const R = 6371000;
     const dLat = toRad(lat2 - lat1);
     const dLon = toRad(lon2 - lon1);
     const a =
@@ -234,7 +240,6 @@ const HomeScreen = () => {
     return R * c;
   };
 
-  // when map view enabled, request location and compute nearby listings within 10 meters
   useEffect(() => {
     let mounted = true;
     const ensureLocationAndCompute = async () => {
@@ -257,7 +262,6 @@ const HomeScreen = () => {
           longitudeDelta: 0.01,
         });
 
-        // find listings that have coordinates and are within 10 meters
         const matched = dbListings.filter((l) => {
           const lat =
             l.locationLat ||
@@ -276,11 +280,10 @@ const HomeScreen = () => {
             Number(lat),
             Number(lon),
           );
-          return d <= 10; // within 10 meters
+          return d <= 10;
         });
         setNearbyListings(matched);
 
-        // kick off geocoding for listings that lack coords
         const toGeocode = dbListings.filter((l) => {
           const has = !!(
             l.locationLat ||
@@ -294,7 +297,6 @@ const HomeScreen = () => {
         });
 
         if (toGeocode.length > 0) {
-          // sequentially geocode to avoid hitting provider limits
           for (const listing of toGeocode) {
             try {
               const results = await Location.geocodeAsync(listing.location);
@@ -316,7 +318,6 @@ const HomeScreen = () => {
                 e,
               );
             }
-            // small delay to be gentle
             await new Promise((res) => setTimeout(res, 200));
           }
         }
@@ -331,7 +332,6 @@ const HomeScreen = () => {
     };
   }, [isMapView, dbListings, geocoded]);
 
-  // fetch transactions when modal opens
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -365,9 +365,9 @@ const HomeScreen = () => {
     <SafeAreaView style={[styles.safeArea, dynamicStyles.container]}>
       <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
 
+      {/* Header Area */}
       <View style={[styles.header, dynamicStyles.header]}>
         <View style={styles.brandRow}>
-          <View></View>
           <Image
             source={require("../../assets/Direct.png")}
             style={styles.logoimg}
@@ -376,19 +376,19 @@ const HomeScreen = () => {
         <View style={styles.headerActions}>
           <TouchableOpacity
             onPress={() => setIsMapView(!isMapView)}
-            style={styles.iconBtn}
+            style={[styles.iconBtn, { borderColor: tokens.border }]}
           >
             {isMapView ? (
-              <LayoutGrid size={22} color={isDark ? "#94a3b8" : "#64748b"} />
+              <LayoutGrid size={20} color={isDark ? "#ffffff" : "#0f172a"} />
             ) : (
-              <Map size={22} color={isDark ? "#94a3b8" : "#64748b"} />
+              <Map size={20} color={isDark ? "#ffffff" : "#0f172a"} />
             )}
           </TouchableOpacity>
           <TouchableOpacity
             onPress={() => router.push("/app/notification")}
-            style={styles.iconBtn}
+            style={[styles.iconBtn, { borderColor: tokens.border }]}
           >
-            <Bell size={20} color={isDark ? "#ffffff" : "#1e293b"} />
+            <Bell size={20} color={isDark ? "#ffffff" : "#0f172a"} />
             {unread > 0 && (
               <View style={styles.notificationBadge}>
                 <Text style={styles.notificationBadgeText}>
@@ -399,9 +399,9 @@ const HomeScreen = () => {
           </TouchableOpacity>
           <TouchableOpacity
             onPress={() => setShowTransactionsModal(true)}
-            style={styles.iconBtn}
+            style={[styles.iconBtn, { borderColor: tokens.border }]}
           >
-            <FileText size={20} color={isDark ? "#ffffff" : "#1e293b"} />
+            <FileText size={20} color={isDark ? "#ffffff" : "#0f172a"} />
           </TouchableOpacity>
         </View>
       </View>
@@ -410,7 +410,10 @@ const HomeScreen = () => {
         stickyHeaderIndices={[0]}
         showsVerticalScrollIndicator={false}
       >
-        <View style={[styles.searchSection, dynamicStyles.container]}>
+        {/* Sticky Search & Dynamic Filtering Area */}
+        <View
+          style={[styles.searchSection, { backgroundColor: tokens.canvas }]}
+        >
           <View style={styles.searchBarContainer}>
             <Search size={18} color="#94a3b8" style={styles.searchIcon} />
             <TextInput
@@ -418,190 +421,303 @@ const HomeScreen = () => {
               placeholderTextColor="#64748b"
               value={searchQuery}
               onChangeText={setSearchQuery}
-              style={[styles.input, dynamicStyles.input]}
+              style={[
+                styles.input,
+                {
+                  backgroundColor: tokens.inputBg,
+                  color: tokens.primaryText,
+                  borderColor: tokens.border,
+                },
+              ]}
             />
             <TouchableOpacity
               onPress={() => setShowFilters(!showFilters)}
-              style={styles.filterToggle}
+              style={[styles.filterToggle, { backgroundColor: tokens.accent }]}
             >
               <Settings2 size={18} color="white" />
             </TouchableOpacity>
           </View>
 
           {showFilters && (
-            <View style={[styles.filterPanel, dynamicStyles.header]}>
-              <View style={styles.filterHeader}>
-                <Text style={styles.label}>PROPERTY TYPE</Text>
-                <TouchableOpacity
-                  onPress={() => {
-                    setSearchQuery("");
-                    setActiveFilter("All");
-                    setMaxBudget(1000000000);
-                  }}
-                >
-                  <Text style={styles.resetText}>RESET</Text>
-                </TouchableOpacity>
-              </View>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={styles.filterScroll}
+            <View
+              style={[styles.filterPanelOuter, { borderColor: tokens.border }]}
+            >
+              <BlurView
+                intensity={isDark ? 30 : 75}
+                tint={isDark ? "dark" : "light"}
+                style={StyleSheet.absoluteFill}
+              />
+              <View
+                style={[styles.filterPanel, { backgroundColor: tokens.card }]}
               >
-                {filters.map((f) => (
+                <View style={styles.filterHeader}>
+                  <Text style={[styles.label, { color: tokens.secondaryText }]}>
+                    PROPERTY TYPE
+                  </Text>
                   <TouchableOpacity
-                    key={f}
-                    onPress={() => setActiveFilter(f)}
-                    style={[
-                      styles.filterChip,
-                      activeFilter === f && styles.activeChip,
-                    ]}
+                    onPress={() => {
+                      setSearchQuery("");
+                      setActiveFilter("All");
+                      setMaxBudget(1000000000);
+                    }}
                   >
-                    <Text
+                    <Text style={styles.resetText}>RESET</Text>
+                  </TouchableOpacity>
+                </View>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.filterScroll}
+                >
+                  {filters.map((f) => (
+                    <TouchableOpacity
+                      key={f}
+                      onPress={() => setActiveFilter(f)}
                       style={[
-                        styles.chipText,
-                        activeFilter === f && styles.activeChipText,
+                        styles.filterChip,
+                        { borderColor: tokens.border },
+                        activeFilter === f && {
+                          backgroundColor: tokens.accent,
+                          borderColor: tokens.accent,
+                        },
                       ]}
                     >
-                      {f}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
+                      <Text
+                        style={[
+                          styles.chipText,
+                          { color: tokens.secondaryText },
+                          activeFilter === f && styles.activeChipText,
+                        ]}
+                      >
+                        {f}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
             </View>
           )}
         </View>
 
-        {isMapView ? (
-          // Placeholder when react-native-maps is not installed. Install it to enable map view.
-          <View style={styles.mapContainer}>
-            {isMapView ? (
-              region ? (
-                <MapView
-                  provider={PROVIDER_GOOGLE}
-                  style={{ flex: 1 }}
-                  initialRegion={region}
-                  showsUserLocation
-                  followsUserLocation
-                >
-                  {/* user location marker is provided by showsUserLocation; show listing markers */}
-                  {(nearbyListings.length > 0
-                    ? nearbyListings
-                    : dbListings.filter(
-                        (l) =>
-                          !!(
-                            l.locationLat ||
-                            l.locationLng ||
-                            l.coords ||
-                            l.lat
-                          ),
-                      )
-                  ).map((listing) => {
-                    const lat =
-                      listing.locationLat ||
-                      listing.coords?.lat ||
-                      listing.lat ||
-                      (geocoded[listing.id] && geocoded[listing.id].latitude);
-                    const lon =
-                      listing.locationLng ||
-                      listing.coords?.lng ||
-                      listing.lng ||
-                      (geocoded[listing.id] && geocoded[listing.id].longitude);
-                    if (!lat || !lon) return null;
-                    return (
-                      <Marker
-                        key={listing.id}
-                        coordinate={{
-                          latitude: Number(lat),
-                          longitude: Number(lon),
-                        }}
-                      >
-                        <View style={{ alignItems: "center" }}>
-                          <View
+        {/* Core Layout Conditional Display */}
+        {showSkeleton ? (
+          <View style={{ padding: 12 }}>
+            <Skeleton type="dashboard" isDark={isDark} />
+          </View>
+        ) : isMapView ? (
+          <View style={[styles.mapContainer, { borderColor: tokens.border }]}>
+            {region ? (
+              <MapView
+                provider={PROVIDER_GOOGLE}
+                style={{ flex: 1 }}
+                initialRegion={region}
+                showsUserLocation
+                followsUserLocation
+              >
+                {(nearbyListings.length > 0
+                  ? nearbyListings
+                  : dbListings.filter(
+                      (l) =>
+                        !!(l.locationLat || l.locationLng || l.coords || l.lat),
+                    )
+                ).map((listing) => {
+                  const lat =
+                    listing.locationLat ||
+                    listing.coords?.lat ||
+                    listing.lat ||
+                    (geocoded[listing.id] && geocoded[listing.id].latitude);
+                  const lon =
+                    listing.locationLng ||
+                    listing.coords?.lng ||
+                    listing.lng ||
+                    (geocoded[listing.id] && geocoded[listing.id].longitude);
+                  if (!lat || !lon) return null;
+                  return (
+                    <Marker
+                      key={listing.id}
+                      coordinate={{
+                        latitude: Number(lat),
+                        longitude: Number(lon),
+                      }}
+                    >
+                      <View style={{ alignItems: "center" }}>
+                        <View
+                          style={{
+                            backgroundColor: "#1e3a8a",
+                            paddingHorizontal: 10,
+                            paddingVertical: 6,
+                            borderRadius: 100,
+                            maxWidth: 140,
+                          }}
+                        >
+                          <Text
+                            numberOfLines={1}
                             style={{
-                              backgroundColor: "#1e3a8a",
-                              paddingHorizontal: 8,
-                              paddingVertical: 4,
-                              borderRadius: 12,
-                              maxWidth: 140,
+                              color: "#fff",
+                              fontWeight: "700",
+                              fontSize: 12,
                             }}
                           >
-                            <Text
-                              numberOfLines={1}
-                              style={{
-                                color: "#fff",
-                                fontWeight: "700",
-                                fontSize: 12,
-                              }}
-                            >
-                              {listing.title || "Listing"}
-                            </Text>
-                          </View>
-                          <View
-                            style={{
-                              width: 10,
-                              height: 10,
-                              backgroundColor: "#10b981",
-                              borderRadius: 6,
-                              marginTop: 6,
-                              borderWidth: 2,
-                              borderColor: "#fff",
-                            }}
-                          />
+                            {listing.title || "Listing"}
+                          </Text>
                         </View>
-                        <Callout tooltip>
-                          <View style={{ padding: 8, maxWidth: 220 }}>
-                            <Text style={{ fontWeight: "800" }}>
-                              {listing.title}
-                            </Text>
-                            <Text style={{ color: "#64748b", marginTop: 4 }}>
-                              {listing.location}
-                            </Text>
-                          </View>
-                        </Callout>
-                      </Marker>
-                    );
-                  })}
-                </MapView>
-              ) : (
-                <View style={styles.mapPlaceholder}>
-                  <Text style={{ color: isDark ? "#94a3b8" : "#64748b" }}>
-                    Locating you...
-                  </Text>
-                </View>
-              )
+                        <View
+                          style={{
+                            width: 10,
+                            height: 10,
+                            backgroundColor: tokens.accent,
+                            borderRadius: 6,
+                            marginTop: 6,
+                            borderWidth: 2,
+                            borderColor: "#fff",
+                          }}
+                        />
+                      </View>
+                      <Callout tooltip>
+                        <View
+                          style={{
+                            padding: 12,
+                            backgroundColor: tokens.canvas,
+                            borderRadius: 16,
+                            maxWidth: 220,
+                            borderWidth: 1,
+                            borderColor: tokens.border,
+                          }}
+                        >
+                          <Text
+                            style={{
+                              fontWeight: "800",
+                              color: tokens.primaryText,
+                            }}
+                          >
+                            {listing.title}
+                          </Text>
+                          <Text
+                            style={{
+                              color: tokens.secondaryText,
+                              marginTop: 4,
+                              fontSize: 12,
+                            }}
+                          >
+                            {listing.location}
+                          </Text>
+                        </View>
+                      </Callout>
+                    </Marker>
+                  );
+                })}
+              </MapView>
             ) : (
-              <View style={styles.mapPlaceholder}>
-                <Text style={{ color: isDark ? "#94a3b8" : "#64748b" }}>
-                  Map is off — toggle the map button to view nearby listings.
+              <View
+                style={[
+                  styles.mapPlaceholder,
+                  { backgroundColor: tokens.card },
+                ]}
+              >
+                <ActivityIndicator
+                  color={tokens.accent}
+                  style={{ marginBottom: 8 }}
+                />
+                <Text
+                  style={{ color: tokens.secondaryText, fontWeight: "600" }}
+                >
+                  Locating you...
                 </Text>
               </View>
             )}
           </View>
         ) : filteredListings.length === 0 ? (
-          <View style={{ padding: 24, alignItems: "center" }}>
-            <Text style={{ color: isDark ? "#94a3b8" : "#64748b" }}>
-              No listings available.
-            </Text>
-            {isAgent && (
+          <View style={{ padding: 20 }}>
+            <View
+              style={[
+                styles.noListingsContainer,
+                { borderColor: tokens.border, backgroundColor: tokens.card },
+              ]}
+            >
+              <View style={styles.noListingsIcon}>
+                <MapPin size={28} color={isDark ? "#fff" : "#0f172a"} />
+              </View>
               <Text
-                style={{ color: isDark ? "#94a3b8" : "#64748b", marginTop: 12 }}
+                style={[styles.noListingsTitle, { color: tokens.primaryText }]}
               >
-                Tap the History icon in the header to view transactions.
+                No listings found
               </Text>
-            )}
+              <Text
+                style={[
+                  styles.noListingsSubtitle,
+                  { color: tokens.secondaryText },
+                ]}
+              >
+                Try widening your search, changing filters or switch to map view
+                to explore nearby listings.
+              </Text>
+
+              <View style={styles.noListingsBtnRow}>
+                <TouchableOpacity
+                  onPress={() => setIsMapView(true)}
+                  style={[
+                    styles.noListingsBtn,
+                    { backgroundColor: tokens.accent },
+                  ]}
+                >
+                  <Text style={[styles.noListingsBtnText]}>Browse Map</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => {
+                    setSearchQuery("");
+                    setActiveFilter("All");
+                    setMaxBudget(1000000000);
+                    setShowFilters(true);
+                  }}
+                  style={[
+                    styles.noListingsBtn,
+                    {
+                      backgroundColor: isDark ? "#111827" : "#eef2ff",
+                      borderWidth: 1,
+                      borderColor: tokens.border,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.noListingsBtnText,
+                      { color: isDark ? "#fff" : tokens.accent },
+                    ]}
+                  >
+                    Reset Filters
+                  </Text>
+                </TouchableOpacity>
+
+                {isAgent && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      router.push("/app/creatlisting");
+                    }}
+                    style={[
+                      styles.noListingsBtn,
+                      { backgroundColor: "#06b6d4" },
+                    ]}
+                  >
+                    <Text style={[styles.noListingsBtnText]}>
+                      Create Listing
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
           </View>
         ) : (
           <View style={styles.gridContainer}>
             <Text style={[styles.sectionTitle, dynamicStyles.text]}>
               {isAgent ? "Your Listings" : "Available Listings"}
             </Text>
-            {filteredListings.map((listing, i) => (
-              <View key={listing.id}>
+            {filteredListings.map((listing) => (
+              <View key={listing.id} style={styles.cardSpacing}>
                 <ListingCard
                   listing={listing}
                   onViewDetails={() => {
                     setCurrentListing(listing);
-                    // navigate to the listing details screen
                     try {
                       router.push("/app/listingdetails");
                     } catch (e) {
@@ -620,7 +736,7 @@ const HomeScreen = () => {
         )}
       </ScrollView>
 
-      {/* Transaction modal (opened from header button) */}
+      {/* Glassmorphic Transactions View Modal */}
       <Modal
         visible={showTransactionsModal}
         animationType="slide"
@@ -629,69 +745,123 @@ const HomeScreen = () => {
       >
         <View style={styles.modalOverlay}>
           <View
-            style={[
-              styles.modalContent,
-              { backgroundColor: isDark ? "#0f172a" : "#ffffff" },
-            ]}
+            style={[styles.modalContentOuter, { borderColor: tokens.border }]}
           >
-            <View style={styles.modalHeader}>
-              <Text
-                style={[
-                  styles.sectionTitle,
-                  {
-                    fontSize: 18,
-                    marginBottom: 0,
-                    color: isDark ? "#fff" : "#0f172a",
-                  },
-                ]}
-              >
-                Transactions
-              </Text>
-              <TouchableOpacity
-                onPress={() => setShowTransactionsModal(false)}
-                style={styles.closeButtonModal}
-                accessibilityLabel="Close transactions"
-              >
-                <X size={20} color={isDark ? "#fff" : "#0f172a"} />
-              </TouchableOpacity>
-            </View>
+            <BlurView
+              intensity={isDark ? 35 : 75}
+              tint={isDark ? "dark" : "light"}
+              style={StyleSheet.absoluteFill}
+            />
 
-            {historyLoading ? (
-              <View style={{ padding: 20, alignItems: "center" }}>
-                <ActivityIndicator />
-              </View>
-            ) : transactions.length === 0 ? (
-              <View style={{ padding: 20, alignItems: "center" }}>
-                <Text style={{ color: isDark ? "#94a3b8" : "#64748b" }}>
-                  No transactions yet.
+            <View
+              style={[
+                styles.modalContent,
+                {
+                  backgroundColor: isDark
+                    ? "rgba(30, 41, 59, 0.25)"
+                    : "rgba(255, 255, 255, 0.45)",
+                },
+              ]}
+            >
+              <View style={styles.modalHeader}>
+                <Text
+                  style={[
+                    styles.sectionTitle,
+                    {
+                      fontSize: 20,
+                      marginBottom: 0,
+                      color: tokens.primaryText,
+                    },
+                  ]}
+                >
+                  Transactions
                 </Text>
+                <TouchableOpacity
+                  onPress={() => setShowTransactionsModal(false)}
+                  style={[
+                    styles.closeButtonModal,
+                    { backgroundColor: tokens.inputBg, borderRadius: 100 },
+                  ]}
+                  accessibilityLabel="Close transactions"
+                >
+                  <X size={18} color={tokens.primaryText} />
+                </TouchableOpacity>
               </View>
-            ) : (
-              <ScrollView style={{ maxHeight: height * 0.7 }}>
-                {transactions.map((t) => (
-                  <View key={t.id} style={styles.transactionRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ fontWeight: "700" }}>
-                        {t.title || t.type || "Transaction"}
-                      </Text>
-                      <Text style={{ color: "#64748b", marginTop: 4 }}>
-                        {t.description || t.listingTitle || ""}
-                      </Text>
+
+              {historyLoading ? (
+                <View style={{ padding: 40, alignItems: "center" }}>
+                  <ActivityIndicator color={tokens.accent} />
+                </View>
+              ) : transactions.length === 0 ? (
+                <View style={{ padding: 40, alignItems: "center" }}>
+                  <Text
+                    style={{ color: tokens.secondaryText, fontWeight: "600" }}
+                  >
+                    No transactions yet.
+                  </Text>
+                </View>
+              ) : (
+                <ScrollView
+                  style={{ maxHeight: height * 0.65 }}
+                  showsVerticalScrollIndicator={false}
+                >
+                  {transactions.map((t) => (
+                    <View
+                      key={t.id}
+                      style={[
+                        styles.transactionRow,
+                        { borderColor: tokens.border },
+                      ]}
+                    >
+                      <View style={{ flex: 1, paddingRight: 12 }}>
+                        <Text
+                          style={{
+                            fontWeight: "700",
+                            color: tokens.primaryText,
+                            fontSize: 15,
+                          }}
+                        >
+                          {t.title || t.type || "Transaction"}
+                        </Text>
+                        <Text
+                          style={{
+                            color: tokens.secondaryText,
+                            marginTop: 4,
+                            fontSize: 13,
+                          }}
+                        >
+                          {t.description || t.listingTitle || ""}
+                        </Text>
+                      </View>
+                      <View style={{ alignItems: "flex-end" }}>
+                        <Text
+                          style={{
+                            fontWeight: "800",
+                            color: tokens.accent,
+                            fontSize: 16,
+                          }}
+                        >
+                          {t.amount ? `₦${t.amount}` : ""}
+                        </Text>
+                        <Text
+                          style={{
+                            color: tokens.muted,
+                            fontSize: 11,
+                            marginTop: 4,
+                          }}
+                        >
+                          {t.createdAt?.toDate
+                            ? new Date(
+                                t.createdAt.toDate(),
+                              ).toLocaleDateString()
+                            : ""}
+                        </Text>
+                      </View>
                     </View>
-                    <View style={{ alignItems: "flex-end" }}>
-                      <Text style={{ fontWeight: "800" }}>
-                        {t.amount ? `₦${t.amount}` : ""}
-                      </Text>
-                      <Text style={{ color: "#94a3b8", fontSize: 12 }}>
-                        {t.createdAt?.toDate
-                          ? new Date(t.createdAt.toDate()).toLocaleString()
-                          : ""}
-                      </Text>
-                    </View>
-                  </View>
-                ))}
-              </ScrollView>
-            )}
+                  ))}
+                </ScrollView>
+              )}
+            </View>
           </View>
         </View>
       </Modal>
@@ -701,147 +871,195 @@ const HomeScreen = () => {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
-  closeButtonModal: { padding: 6 },
+  noListingsContainer: {
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+  noListingsIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 64,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 8,
+    backgroundColor: "rgba(255,255,255,0.04)",
+  },
+  noListingsTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    marginTop: 4,
+  },
+  noListingsSubtitle: {
+    fontSize: 13,
+    textAlign: "center",
+    marginTop: 6,
+    maxWidth: 420,
+  },
+  noListingsBtnRow: {
+    flexDirection: "row",
+    marginTop: 14,
+    gap: 10,
+    flexWrap: "wrap",
+    justifyContent: "center",
+  },
+  noListingsBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    minWidth: 110,
+    alignItems: "center",
+    justifyContent: "center",
+    marginHorizontal: 6,
+    marginVertical: 6,
+  },
+  noListingsBtnText: { fontWeight: "800", color: "#fff" },
+  closeButtonModal: { padding: 8 },
   header: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 20,
-    paddingVertical: 12,
+    paddingVertical: 14,
     borderBottomWidth: 1,
   },
   logoimg: {
-    width: 50,
-    height: 50,
+    width: 48,
+    height: 48,
+    resizeMode: "contain",
   },
   brandRow: { flexDirection: "row", alignItems: "center" },
-  logoBox: {
-    width: 32,
-    height: 32,
-    backgroundColor: "#071844ff",
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 8,
-  },
-  brandText: { fontSize: 18, fontWeight: "800" },
-  brandAccent: { color: "#0c0a55ff" },
   headerActions: { flexDirection: "row", alignItems: "center" },
   iconBtn: {
-    marginLeft: 12,
+    marginLeft: 10,
     width: 44,
     height: 44,
-    borderRadius: 10,
+    borderRadius: 100, // Capsule circular frames from inspiration
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "transparent",
+    backgroundColor: "rgba(255, 255, 255, 0.02)",
+    borderWidth: 1,
   },
-  searchSection: { padding: 20 },
+  searchSection: { paddingHorizontal: 20, paddingVertical: 16 },
   searchBarContainer: {
     flexDirection: "row",
     alignItems: "center",
     position: "relative",
   },
-  searchIcon: { position: "absolute", left: 15, zIndex: 1 },
+  searchIcon: { position: "absolute", left: 18, zIndex: 1 },
   input: {
     flex: 1,
-    height: 50,
-    borderRadius: 15,
-    paddingLeft: 45,
-    paddingRight: 60,
-    fontSize: 14,
+    height: 52,
+    borderRadius: 100, // Capsule search entry fields
+    paddingLeft: 48,
+    paddingRight: 64,
+    fontSize: 15,
+    fontWeight: "500",
     borderWidth: 1,
-    borderColor: "#e2e8f0",
   },
   filterToggle: {
     position: "absolute",
-    right: 5,
+    right: 6,
     width: 40,
     height: 40,
-    backgroundColor: "#071844ff",
-    borderRadius: 12,
+    borderRadius: 100, // Completely circular filters indicator trigger button
     alignItems: "center",
     justifyContent: "center",
   },
-  filterPanel: { marginTop: 15, padding: 15, borderRadius: 20, borderWidth: 1 },
+  filterPanelOuter: {
+    marginTop: 14,
+    borderRadius: 24,
+    overflow: "hidden",
+    borderWidth: 1,
+  },
+  filterPanel: { padding: 18 },
   filterHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginBottom: 15,
+    marginBottom: 14,
+    alignItems: "center",
   },
-  label: { fontSize: 10, fontWeight: "800", color: "#94a3b8" },
-  resetText: { fontSize: 10, fontWeight: "800", color: "#f43f5e" },
+  label: { fontSize: 11, fontWeight: "800", letterSpacing: 0.5 },
+  resetText: { fontSize: 11, fontWeight: "800", color: "#f43f5e" },
   filterScroll: { flexDirection: "row" },
   filterChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: "#f1f5f9",
-    marginRight: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 100, // Matches capsule aesthetic perfectly
+    backgroundColor: "rgba(255, 255, 255, 0.02)",
+    marginRight: 10,
     borderWidth: 1,
-    borderColor: "#e2e8f0",
   },
-  activeChip: { backgroundColor: "#10b981", borderColor: "#10b981" },
-  chipText: { fontSize: 12, color: "#64748b", fontWeight: "700" },
+  chipText: { fontSize: 13, fontWeight: "700" },
   activeChipText: { color: "white" },
-  gridContainer: { padding: 20 },
-  sectionTitle: { fontSize: 20, fontWeight: "800", marginBottom: 20 },
+  gridContainer: { paddingHorizontal: 20, paddingTop: 8 },
+  cardSpacing: { marginBottom: 16 },
+  sectionTitle: {
+    fontSize: 22,
+    fontWeight: "700",
+    marginBottom: 18,
+    letterSpacing: -0.4,
+  },
   mapContainer: {
-    height: height * 0.6,
+    height: height * 0.58,
     width: width - 40,
     alignSelf: "center",
-    borderRadius: 30,
+    borderRadius: 36, // Large smooth geometric frames
     overflow: "hidden",
     marginTop: 10,
+    borderWidth: 1,
   },
   mapPlaceholder: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#f1f5f9",
-    borderRadius: 30,
-  },
-  notificationBtn: {
-    position: "relative",
-    padding: 0,
-    backgroundColor: "#f1f5f9",
+    borderRadius: 36,
   },
   notificationBadge: {
     position: "absolute",
-    top: -6,
-    right: -6,
+    top: -2,
+    right: -2,
     backgroundColor: "#ef4444",
     paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#fff",
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: "#0a0e1a",
   },
-  notificationBadgeText: { color: "#fff", fontSize: 10, fontWeight: "700" },
+  notificationBadgeText: { color: "#fff", fontSize: 9, fontWeight: "800" },
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    backgroundColor: "rgba(3, 7, 18, 0.65)", // Dark cinematic context shade overlay
     justifyContent: "flex-end",
   },
+  modalContentOuter: {
+    borderTopLeftRadius: 36,
+    borderTopRightRadius: 36,
+    overflow: "hidden",
+    borderTopWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+  },
   modalContent: {
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    maxHeight: "80%",
+    paddingTop: 24,
+    paddingHorizontal: 24,
+    paddingBottom: 40,
   },
   modalHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 15,
+    marginBottom: 24,
   },
   transactionRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingVertical: 10,
+    paddingVertical: 16,
     borderBottomWidth: 1,
-    borderColor: "#e2e8f0",
   },
 });
 

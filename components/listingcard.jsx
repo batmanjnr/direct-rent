@@ -38,20 +38,53 @@ const ListingCard = ({
   const { theme } = useTheme();
   const isDark = theme === "dark";
 
-  const isFav = favorites.includes(listing.id);
-  const isAgent = user?.role === "agent";
-  const router = useRouter();
+  // Theme tokens used within this component to ensure consistent light/dark colors
+  const tokens = isDark
+    ? {
+        cardBg: "#0b1220",
+        border: "#1e293b",
+        title: "#ffffff",
+        subtitle: "#94a3b8",
+        amenityBg: "#071026",
+        amenityBorder: "#111827",
+        detailsBtnBg: "#0b1220",
+        favBtnBg: "rgba(15,23,42,0.3)",
+        priceBadgeBg: "#0f172a",
+        priceText: "#fff",
+        avatarBg: "#0b1220",
+      }
+    : {
+        cardBg: "#ffffff",
+        border: "#f1f5f9",
+        title: "#0f172a",
+        subtitle: "#64748b",
+        amenityBg: "#f8fafc",
+        amenityBorder: "#f1f5f9",
+        detailsBtnBg: "#f8fafc",
+        favBtnBg: "rgba(255,255,255,0.3)",
+        priceBadgeBg: "#eef2ff",
+        priceText: "#4f46e5",
+        avatarBg: "#f1f5f9",
+      };
 
   const colors = {
-    cardBg: isDark ? "#0b1220" : "#fff",
-    border: isDark ? "#1e293b" : "#f1f5f9",
-    title: isDark ? "#ffffff" : "#0f172a",
-    subtitle: isDark ? "#94a3b8" : "#64748b",
-    amenityBg: isDark ? "#071026" : "#f8fafc",
-    amenityBorder: isDark ? "#111827" : "#f1f5f9",
-    detailsBtnBg: isDark ? "#0b1220" : "#f8fafc",
-    favBtnBg: isDark ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.3)",
+    cardBg: tokens.cardBg,
+    border: tokens.border,
+    title: tokens.title,
+    subtitle: tokens.subtitle,
+    amenityBg: tokens.amenityBg,
+    amenityBorder: tokens.amenityBorder,
+    detailsBtnBg: tokens.detailsBtnBg,
+    favBtnBg: tokens.favBtnBg,
+    priceBadgeBg: tokens.priceBadgeBg,
+    priceText: tokens.priceText,
   };
+
+  // Restore isAgent flag used in rendering logic
+  const isAgent = user?.role === "agent";
+
+  // Favorite state
+  const isFav = Array.isArray(favorites) && favorites.includes(listing.id);
 
   // Badge Logic[cite: 4]
   const renderBadges = () => {
@@ -97,7 +130,6 @@ const ListingCard = ({
       ]}
     >
       <TouchableOpacity activeOpacity={0.9} onPress={onViewDetails}>
-        
         <View style={styles.imageContainer}>
           <Image
             source={{ uri: listing.image }}
@@ -125,7 +157,6 @@ const ListingCard = ({
           )}
         </View>
 
-        
         <View style={styles.content}>
           <View style={styles.headerRow}>
             <Text
@@ -135,7 +166,9 @@ const ListingCard = ({
               {listing.title}
             </Text>
             <View style={styles.priceBadge}>
-              <Text style={styles.priceText}>{listing.price}</Text>
+              <Text style={[styles.priceText, { color: colors.priceText }]}>
+                {listing.price}
+              </Text>
             </View>
           </View>
 
@@ -169,15 +202,11 @@ const ListingCard = ({
             ))}
           </View>
 
-          
           {!hideAgent && !isAgentView && listing.agent && (
             <View style={styles.agentContainer}>
               <View style={styles.agentInfo}>
                 <View
-                  style={[
-                    styles.avatar,
-                    { backgroundColor: isDark ? "#0b1220" : "#f1f5f9" },
-                  ]}
+                  style={[styles.avatar, { backgroundColor: colors.avatarBg }]}
                 >
                   {listing.agent.avatarUrl ? (
                     <Image
@@ -224,7 +253,6 @@ const ListingCard = ({
             </View>
           )}
 
-          
           <View style={styles.footer}>
             {listing.verified && !isAgentView && (
               <View

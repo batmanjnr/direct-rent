@@ -191,9 +191,9 @@ const NotificationsScreen = () => {
         styles.container,
         {
           backgroundColor: isDark ? "#020617" : "#f8fafc",
-          paddingTop: Platform.OS === "ios" ? 88 : 64,
         },
       ]}
+      edges={["top", "left", "right"]}
     >
       <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
 

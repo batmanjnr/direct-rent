@@ -45,6 +45,8 @@ export default function Signup() {
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
   const [showCityModal, setShowCityModal] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [showConsentModal, setShowConsentModal] = useState(false);
 
   const [formData, setFormData] = useState({
     firstName: "",
@@ -392,10 +394,12 @@ export default function Signup() {
               <TouchableOpacity
                 style={[
                   styles.submitBtn,
-                  isFormComplete ? styles.btnActive : styles.btnInactive,
+                  isFormComplete && agreedToTerms
+                    ? styles.btnActive
+                    : styles.btnInactive,
                 ]}
                 onPress={handleSignup}
-                disabled={!isFormComplete || isLoading}
+                disabled={!isFormComplete || !agreedToTerms || isLoading}
               >
                 {isLoading ? (
                   <ActivityIndicator color="white" />
@@ -403,6 +407,37 @@ export default function Signup() {
                   <Text style={styles.submitText}>Create Account</Text>
                 )}
               </TouchableOpacity>
+
+              {/* Consent radio placed below the submit button. User must agree before button becomes active */}
+              <View style={styles.consentRow}>
+                <TouchableOpacity
+                  style={styles.consentCheckbox}
+                  onPress={() => setAgreedToTerms((v) => !v)}
+                >
+                  <View
+                    style={[
+                      styles.checkboxInner,
+                      agreedToTerms && styles.checkboxChecked,
+                    ]}
+                  >
+                    {agreedToTerms && (
+                      <Text style={styles.checkboxTick}>✓</Text>
+                    )}
+                  </View>
+                </TouchableOpacity>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.consentText}>
+                    I agree to the Terms of Use and Privacy Policy.
+                    <Text
+                      style={styles.learnMoreLink}
+                      onPress={() => setShowConsentModal(true)}
+                    >
+                      Learn more
+                    </Text>
+                  </Text>
+                </View>
+              </View>
+
               <TouchableOpacity
                 style={styles.signupLink}
                 onPress={() => router.push("/home")}
@@ -438,6 +473,63 @@ export default function Signup() {
                 </TouchableOpacity>
               )}
             />
+          </View>
+        </View>
+      </Modal>
+
+      {/* Consent Modal */}
+      <Modal
+        visible={showConsentModal}
+        animationType="slide"
+        transparent={true}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.consentModalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Privacy & Consent</Text>
+              <TouchableOpacity onPress={() => setShowConsentModal(false)}>
+                <X size={24} color="#0f172a" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={{ maxHeight: 320 }}>
+              <Text style={styles.consentHeading}>Chat Monitoring</Text>
+              <Text style={styles.consentBody}>
+                For safety and quality assurance, chats within the DirectRent
+                app are monitored and stored. This helps protect both tenants
+                and agents and allows us to investigate reports or disputes.
+              </Text>
+
+              <Text style={styles.consentHeading}>
+                Transactions Outside the App
+              </Text>
+              <Text style={styles.consentBody}>
+                Transactions arranged outside the DirectRent platform are not
+                covered by our protection and are not monitored. We strongly
+                advise finalizing payments through our app when available.
+              </Text>
+
+              <Text style={styles.consentHeading}>Data Security</Text>
+              <Text style={styles.consentBody}>
+                We store user information securely and handle personal data
+                responsibly. Sensitive information is protected and only used
+                for verification and trust-building purposes.
+              </Text>
+            </ScrollView>
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "flex-end",
+                gap: 8,
+                marginTop: 12,
+              }}
+            >
+              <TouchableOpacity
+                style={styles.paymentCancelBtn}
+                onPress={() => setShowConsentModal(false)}
+              >
+                <Text style={styles.paymentCancelText}>Close</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -533,6 +625,13 @@ const styles = StyleSheet.create({
     padding: 24,
     maxHeight: "50%",
   },
+  consentModalCard: {
+    backgroundColor: "#ffffff",
+    padding: 18,
+    borderRadius: 14,
+    margin: 24,
+    maxHeight: "70%",
+  },
   modalHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -548,4 +647,31 @@ const styles = StyleSheet.create({
   cityItemText: { fontSize: 16 },
   signupLink: { marginTop: 12, alignItems: "center" },
   signupText: { color: "#1e3a8a", fontWeight: "700", fontSize: 13 },
+  consentRow: { flexDirection: "row", alignItems: "center", marginTop: 12 },
+  consentCheckbox: { marginRight: 10 },
+  checkboxInner: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+  },
+  checkboxChecked: { backgroundColor: "#1e3a8a", borderColor: "#1e3a8a" },
+  checkboxTick: { color: "#ffffff", fontWeight: "900" },
+  consentText: { fontSize: 12, color: "#475569" },
+  learnMoreLink: {
+    color: "#1e3a8a",
+    fontWeight: "700",
+    textDecorationLine: "underline",
+  },
+  consentHeading: {
+    fontSize: 14,
+    fontWeight: "900",
+    marginTop: 8,
+    marginBottom: 6,
+  },
+  consentBody: { fontSize: 13, color: "#475569", lineHeight: 18 },
 });

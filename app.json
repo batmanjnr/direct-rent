@@ -28,6 +28,7 @@
       "edgeToEdgeEnabled": true,
       "package": "com.directrent.app",
       "permissions": [
+        "android.permission.INTERNET",
         "android.permission.RECORD_AUDIO"
       ]
     },
@@ -49,7 +50,20 @@
         {
           "android": {
             "enableMinifyInReleaseBuilds": true,
-            "enableShrinkResourcesInReleaseBuilds": true
+            "shrinkResourcesInReleaseBuilds": true,
+            "extraProguardRules": "-keep class com.facebook.react.turbomodule.core.** { *; }",
+            "packagingOptions": {
+              "pickFirst": [
+                "**/libcrypto.so",
+                "**/libssl.so"
+              ]
+            },
+            "splits": {
+              "abi": {
+                "enable": true,
+                "universalApk": false
+              }
+            }
           }
         }
       ]

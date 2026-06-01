@@ -1,1367 +1,999 @@
-// import React, { useState, useEffect } from "react";
-// import {
-//   View,
-//   Text,
-//   ScrollView,
-//   TouchableOpacity,
-//   Image,
-//   SafeAreaView,
-//   Switch,
-//   Alert,
-//   ActivityIndicator,
-//   StyleSheet,
-//   useColorScheme,
-// } from "react-native";
-// import {
-//   Settings,
-//   MapPin,
-//   LogOut,
-//   Bell,
-//   Shield,
-//   ChevronRight,
-//   ShieldCheck,
-//   Sun,
-//   Moon,
-//   Camera,
-//   FileText,
-//   User,
-//   CreditCard,
-//   KeyIcon,
-// } from "lucide-react-native";
-// import * as ImagePicker from "expo-image-picker";
-// import { useRouter } from "expo-router";
-// import { useAuth } from "../../context/AuthContext";
-// import { useTheme } from "../../context/ThemeContext";
-// import { db, storage, auth } from "../../lib/firebase";
-// import {
-//   doc,
-//   updateDoc,
-//   collection,
-//   query,
-//   where,
-//   onSnapshot,
-//   deleteDoc,
-// } from "firebase/firestore";
-// import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-// import { deleteUser } from "firebase/auth";
-// import VerificationBadge from "../../components/verificationbadge";
-// import UpdateProfile from "../../components/UpdateProfile";
-// import ChangePassword from "../../components/ChangePassword";
-// import UpdateProfileModal from "../../components/UpdateProfileModal";
-// import ResetPasswordModal from "../../components/ResetPasswordModal";
-// import KYCVerification from "../../components/kycverification";
-
-// const ProfileScreen = () => {
-//   const { user, logout, updateProfile } = useAuth();
-//   const router = useRouter();
-//   const { theme, toggleTheme } = useTheme();
-//   const colorScheme = useColorScheme();
-
-//   const [loading, setLoading] = useState(false);
-//   const [vaultCount, setVaultCount] = useState(0);
-//   const [unreadCount, setUnreadCount] = useState(0);
-//   const [showUpdateModal, setShowUpdateModal] = useState(false);
-//   const [showResetModal, setShowResetModal] = useState(false);
-
-//   // Theming: prefer system appearance but fall back to ThemeContext
-//   const isDark = colorScheme === "dark" || theme === "dark";
-//   const tokens = isDark
-//     ? {
-//         background: "#0A0B0D",
-//         canvas: "#071226",
-//         headerBg: "#0f172a",
-//         cardBg: "#0e1520",
-//         accent: "#C5A46E",
-//         primaryText: "#FFFFFF",
-//         secondaryText: "#BFC3C8",
-//         muted: "#94a3b8",
-//         border: "#1f2937",
-//         positive: "#34D399",
-//       }
-//     : {
-//         background: "#FFFFFF",
-//         canvas: "#F7F8FA",
-//         headerBg: "#FFFFFF",
-//         cardBg: "#F8FBFF",
-//         accent: "#2B3467",
-//         primaryText: "#0F172A",
-//         secondaryText: "#475569",
-//         muted: "#94a3b8",
-//         border: "#e6eef8",
-//         positive: "#10B981",
-//       };
-
-//   const styles = getProfileStyles(tokens);
-
-//   useEffect(() => {
-//     if (!user) return;
-//     const q = query(collection(db, "vault"), where("userId", "==", user.id));
-//     const unsubscribe = onSnapshot(q, (snapshot) => {
-//       setVaultCount(snapshot.size);
-//     });
-//     return () => unsubscribe();
-//   }, [user]);
-
-//   // subscribe to unread notifications count for badge
-//   useEffect(() => {
-//     if (!user || !user.id) {
-//       setUnreadCount(0);
-//       return;
-//     }
-//     const nRef = collection(db, "notifications");
-//     const q = query(
-//       nRef,
-//       where("userId", "==", user.id),
-//       where("read", "==", false),
-//     );
-//     const unsub = onSnapshot(
-//       q,
-//       (snap) => {
-//         setUnreadCount(snap.size);
-//       },
-//       (err) => {
-//         console.warn("[Profile] unread notifications subscribe failed", err);
-//       },
-//     );
-//     return () => unsub();
-//   }, [user]);
-
-//   const handleImagePick = async () => {
-//     const permissionResult =
-//       await ImagePicker.requestMediaLibraryPermissionsAsync();
-//     if (permissionResult.granted === false) {
-//       Alert.alert(
-//         "Permission Required",
-//         "Allow DirectRent to access your photos to update your profile.",
-//       );
-//       return;
-//     }
-
-//     const result = await ImagePicker.launchImageLibraryAsync({
-//       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-//       allowsEditing: true,
-//       aspect: [1, 1],
-//       quality: 0.7,
-//     });
-
-//     if (!result.canceled) {
-//       uploadAvatar(result.assets[0].uri);
-//     }
-//   };
-
-//   const uploadAvatar = async (uri) => {
-//     setLoading(true);
-//     try {
-//       const response = await fetch(uri);
-//       const blob = await response.blob();
-//       const storageRef = ref(storage, `avatars/${user.id}`);
-//       await uploadBytes(storageRef, blob);
-//       const url = await getDownloadURL(storageRef);
-
-//       await updateDoc(doc(db, "users", user.id), { avatarUrl: url });
-//       await updateProfile({ avatarUrl: url });
-//       Alert.alert("Success", "Profile photo updated!");
-//     } catch (error) {
-//       Alert.alert("Error", "Failed to upload image.");
-//     } finally {
-//       setLoading(false);
-//     }
-//   };
-
-//   const confirmLogout = () => {
-//     Alert.alert("Log Out", "Are you sure you want to log out of DirectRent?", [
-//       { text: "Cancel", style: "cancel" },
-//       {
-//         text: "Log Out",
-//         style: "destructive",
-//         onPress: async () => {
-//           await logout();
-//           router.replace("/auth/home");
-//         },
-//       },
-//     ]);
-//   };
-
-//   const handleDeleteAccount = () => {
-//     Alert.alert(
-//       "Delete Account",
-//       "This will permanently delete your account and all local profile data. This cannot be undone. Are you sure?",
-//       [
-//         { text: "Cancel", style: "cancel" },
-//         {
-//           text: "Delete",
-//           style: "destructive",
-//           onPress: async () => {
-//             setLoading(true);
-//             try {
-//               // attempt to delete Firestore user doc first
-//               try {
-//                 await deleteDoc(doc(db, "users", user.id));
-//               } catch (e) {
-//                 console.warn("[Profile] failed to delete user doc", e);
-//               }
-
-//               // attempt to delete auth user
-//               try {
-//                 // Ensure the current user matches the profile uid
-//                 if (auth.currentUser && auth.currentUser.uid === user.id) {
-//                   await deleteUser(auth.currentUser);
-//                 } else if (auth.currentUser) {
-//                   // try deleting the signed-in user even if ids differ
-//                   await deleteUser(auth.currentUser);
-//                 } else {
-//                   console.warn(
-//                     "[Profile] no auth.currentUser available to delete",
-//                   );
-//                 }
-//               } catch (e) {
-//                 console.warn("[Profile] deleteUser failed", e);
-//                 // If requires-recent-login, sign the user out and ask them to sign in again to delete their account
-//                 if (e?.code === "auth/requires-recent-login") {
-//                   Alert.alert(
-//                     "Re-authentication required",
-//                     "Please sign out and sign in again, then try deleting your account.",
-//                   );
-//                   await logout();
-//                   router.replace("/home");
-//                   return;
-//                 } else {
-//                   Alert.alert(
-//                     "Error",
-//                     e?.message || "Failed to delete account",
-//                   );
-//                 }
-//               }
-
-//               // final cleanup: ensure user is logged out locally
-//               try {
-//                 await logout();
-//               } catch (e) {
-//                 /* ignore */
-//               }
-//               Alert.alert("Account deleted", "Your account has been deleted.");
-//               router.replace("/home");
-//             } finally {
-//               setLoading(false);
-//             }
-//           },
-//         },
-//       ],
-//     );
-//   };
-
-//   return (
-//     <SafeAreaView style={styles.container}>
-//       <View style={styles.header}>
-//         <Text style={styles.headerTitle}>Profile</Text>
-//         <TouchableOpacity
-//           style={styles.headerButton}
-//           onPress={() => router.push("/app/notification")}
-//         >
-//           <Bell size={20} color={tokens.primaryText} />
-//           {unreadCount > 0 && (
-//             <View style={styles.headerBadge}>
-//               <Text style={styles.headerBadgeText}>
-//                 {unreadCount > 99 ? "99+" : unreadCount}
-//               </Text>
-//             </View>
-//           )}
-//         </TouchableOpacity>
-//       </View>
-
-//       <ScrollView
-//         showsVerticalScrollIndicator={false}
-//         contentContainerStyle={styles.scrollContent}
-//       >
-//         <View style={styles.topCard}>
-//           <TouchableOpacity
-//             onPress={handleImagePick}
-//             style={styles.avatarTouchable}
-//           >
-//             <View style={styles.avatarWrapperLarge}>
-//               {user?.avatarUrl ? (
-//                 <Image
-//                   source={{ uri: user.avatarUrl }}
-//                   style={styles.avatarImageLarge}
-//                 />
-//               ) : (
-//                 <View style={styles.avatarPlaceholder}>
-//                   <User size={48} color={tokens.positive} />
-//                 </View>
-//               )}
-//             </View>
-//             <View style={styles.cameraBadge}>
-//               <Camera size={14} color="#fff" />
-//             </View>
-//           </TouchableOpacity>
-
-//           <View style={{ alignItems: "center", marginTop: 12 }}>
-//             <Text style={styles.nameLarge}>
-//               {user?.firstName} {user?.lastName}
-//             </Text>
-//             <Text style={styles.emailText}>{user?.email}</Text>
-//             <View style={styles.roleRow}>
-//               <ShieldCheck size={14} color={tokens.accent} />
-//               <Text style={{ marginLeft: 8, fontWeight: "700" }}>
-//                 {user?.role?.toUpperCase() || "USER"}
-//               </Text>
-//             </View>
-//           </View>
-//         </View>
-
-//         <View style={styles.menuList}>
-//           {user?.role && String(user.role).toLowerCase() === "agent" && (
-//             <KYCVerification />
-//           )}
-
-//           <ProfileMenuButton
-//             icon={<User size={20} color={tokens.accent} />}
-//             title="Update Profile"
-//             subtitle="Edit personal details"
-//             onPress={() => setShowUpdateModal(true)}
-//           />
-//           <ProfileMenuButton
-//             icon={<KeyIcon size={20} color={tokens.accent} />}
-//             title="Reset Password"
-//             subtitle="Change your password"
-//             onPress={() => setShowResetModal(true)}
-//           />
-//           <ProfileMenuButton
-//             icon={<CreditCard size={20} color={tokens.accent} />}
-//             title="Payment Methods"
-//             subtitle="Manage rent payments"
-//             onPress={() => {}}
-//           />
-//           <ProfileMenuButton
-//             icon={<ShieldCheck size={20} color={tokens.accent} />}
-//             title="DirectRent Vault"
-//             subtitle={`${vaultCount} documents secured`}
-//             onPress={() => {}}
-//           />
-//         </View>
-
-//         <View style={{ paddingHorizontal: 12, marginTop: 10 }}>
-//           <TouchableOpacity
-//             onPress={toggleTheme}
-//             style={styles.simpleRow}
-//           >
-//             <Text style={styles.simpleRowText}>Toggle Appearance</Text>
-//             <Switch value={theme === "dark"} onValueChange={toggleTheme} />
-//           </TouchableOpacity>
-
-//           <TouchableOpacity
-//             onPress={confirmLogout}
-//             style={[styles.simpleRow, { marginTop: 12 }]}
-//           >
-//             <LogOut size={18} color="#ef4444" />
-//             <Text
-//               style={{ marginLeft: 12, color: "#ef4444", fontWeight: "700" }}
-//             >
-//               Sign Out
-//             </Text>
-//           </TouchableOpacity>
-
-//           <TouchableOpacity
-//             onPress={handleDeleteAccount}
-//             style={[styles.simpleRow, styles.deleteRow, { marginTop: 12 }]}
-//           >
-//             <Text style={styles.deleteText}>Delete Account</Text>
-//           </TouchableOpacity>
-//         </View>
-
-//         <UpdateProfileModal
-//           visible={showUpdateModal}
-//           onClose={() => setShowUpdateModal(false)}
-//         />
-//         <ResetPasswordModal
-//           visible={showResetModal}
-//           onClose={() => setShowResetModal(false)}
-//         />
-//       </ScrollView>
-
-//       {loading && (
-//         <View style={styles.loadingOverlay}>
-//           <ActivityIndicator size="large" color={tokens.accent} />
-//         </View>
-//       )}
-//     </SafeAreaView>
-//   );
-// };
-
-// const ProfileMenuButton = ({ icon, title, subtitle, onPress }) => {
-//   const { theme } = useTheme();
-//   const colorScheme = useColorScheme();
-//   const isDarkLocal = colorScheme === "dark" || theme === "dark";
-// const tokensLocal = isDarkLocal
-//   ? {
-//       background: "#0d1321",         // Deep cosmic midnight blue
-//       canvas: "#0a0e1a",             // Dark base canvas
-//       headerBg: "rgba(10, 14, 26, 0.85)", 
-//       cardBg: "rgba(30, 41, 59, 0.25)", // Perfectly calibrated translucent dark glass fill
-//       accent: "#7c3aed",             // Vibrant profile accent tint
-//       primaryText: "#FFFFFF",
-//       secondaryText: "#94a3b8",
-//       muted: "#64748b",
-//       border: "rgba(255, 255, 255, 0.08)", // Ultra-thin glowing glass border outline
-//       positive: "#38bdf8",
-//     }
-//   : {
-//       background: "#f8fafc",
-//       canvas: "#f1f5f9",
-//       headerBg: "rgba(255, 255, 255, 0.85)",
-//       cardBg: "rgba(255, 255, 255, 0.5)",
-//       accent: "#2563eb",
-//       primaryText: "#0f172a",
-//       secondaryText: "#475569",
-//       muted: "#94a3b8",
-//       border: "rgba(15, 23, 42, 0.06)",
-//       positive: "#2563eb",
-//     };
-
-//   const stylesLocal = getProfileStyles(tokensLocal);
-//   const chevronColor = isDarkLocal ? "#94a3b8" : "#64748b";
-
-//   return (
-//     <TouchableOpacity onPress={onPress} style={stylesLocal.menuButton}>
-//       <View style={stylesLocal.menuLeft}>
-//         <View style={stylesLocal.menuIcon}>{icon}</View>
-//         <View style={stylesLocal.menuTextWrap}>
-//           <Text style={stylesLocal.menuTitle}>{title}</Text>
-//           <Text style={stylesLocal.menuSubtitle}>{subtitle}</Text>
-//         </View>
-//       </View>
-//       <ChevronRight size={20} color={chevronColor} />
-//     </TouchableOpacity>
-//   );
-// };
-
-// function getProfileStyles(t) {
-//   return StyleSheet.create({
-//     container: { 
-//       flex: 1, 
-//       backgroundColor: t.canvas 
-//     },
-//     header: {
-//       flexDirection: "row",
-//       justifyContent: "space-between",
-//       alignItems: "center",
-//       paddingHorizontal: 20,
-//       paddingVertical: 16,
-//       borderBottomWidth: 1,
-//       borderBottomColor: t.border,
-//       backgroundColor: t.headerBg,
-//     },
-//     headerTitle: { 
-//       fontSize: 20, 
-//       fontWeight: "700", 
-//       color: t.primaryText,
-//       letterSpacing: -0.3,
-//     },
-//     headerButton: { 
-//       padding: 10, 
-//       borderRadius: 14,
-//       backgroundColor: "rgba(255, 255, 255, 0.03)",
-//       borderWidth: 1,
-//       borderColor: t.border,
-//     },
-//     headerBadge: {
-//       position: "absolute",
-//       top: -2,
-//       right: -2,
-//       backgroundColor: "#ef4444",
-//       paddingHorizontal: 6,
-//       paddingVertical: 2,
-//       borderRadius: 10,
-//       borderWidth: 1.5,
-//       borderColor: t.background,
-//     },
-//     headerBadgeText: { 
-//       color: "#fff", 
-//       fontSize: 9, 
-//       fontWeight: "800" 
-//     },
-//     scrollContent: { 
-//       paddingHorizontal: 20, 
-//       paddingTop: 24, 
-//       paddingBottom: 40 
-//     },
-//     topCard: {
-//       paddingVertical: 32,
-//       paddingHorizontal: 24,
-//       borderRadius: 36, 
-//       alignItems: "center",
-//       marginBottom: 20,
-//       backgroundColor: t.cardBg,
-//       borderWidth: 1,
-//       borderColor: t.border,
-//       shadowColor: "#000",
-//       shadowOffset: { width: 0, height: 12 },
-//       shadowOpacity: 0.2,
-//       shadowRadius: 24,
-//       elevation: 6,
-//     },
-//     avatarTouchable: { 
-//       position: "relative" 
-//     },
-//     avatarWrapperLarge: {
-//       width: 110,
-//       height: 110,
-//       borderRadius: 55,
-//       overflow: "hidden",
-//       justifyContent: "center",
-//       alignItems: "center",
-//       backgroundColor: "rgba(255, 255, 255, 0.02)",
-//       borderWidth: 2,
-//       borderColor: "rgba(255, 255, 255, 0.4)", 
-//     },
-//     avatarImageLarge: { 
-//       width: "100%", 
-//       height: "100%" 
-//     },
-//     avatarPlaceholder: { 
-//       justifyContent: "center", 
-//       alignItems: "center", 
-//       flex: 1 
-//     },
-//     cameraBadge: {
-//       position: "absolute",
-//       bottom: -2,
-//       right: -2,
-//       backgroundColor: "rgba(255, 255, 255, 0.15)", 
-//       padding: 8,
-//       borderRadius: 20,
-//       borderWidth: 1,
-//       borderColor: "rgba(255, 255, 255, 0.25)",
-//     },
-//     nameLarge: { 
-//       fontSize: 24, 
-//       fontWeight: "700", 
-//       color: t.primaryText,
-//       letterSpacing: -0.5,
-//       textAlign: "center"
-//     },
-//     emailText: { 
-//       color: t.secondaryText, 
-//       fontSize: 14,
-//       marginTop: 4,
-//       fontWeight: "400",
-//     },
-//     roleRow: { 
-//       flexDirection: "row", 
-//       alignItems: "center", 
-//       marginTop: 12,
-//       backgroundColor: "rgba(255, 255, 255, 0.05)", 
-//       paddingHorizontal: 16,
-//       paddingVertical: 6,
-//       borderRadius: 24,
-//       borderWidth: 1,
-//       borderColor: "rgba(255, 255, 255, 0.1)"
-//     },
-//     chipsRow: { 
-//       flexDirection: "row", 
-//       justifyContent: "center", 
-//       marginTop: 28, 
-//       width: "100%",
-//       borderTopWidth: 1,
-//       borderTopColor: "rgba(255, 255, 255, 0.05)", 
-//       paddingTop: 20
-//     },
-//     chip: { 
-//       flex: 1,
-//       backgroundColor: "transparent", 
-//       paddingVertical: 4, 
-//       paddingHorizontal: 8, 
-//       alignItems: "center", 
-//     },
-//     chipNumber: { 
-//       fontSize: 22, 
-//       fontWeight: "700", 
-//       color: t.primaryText,
-//       letterSpacing: -0.5
-//     },
-//     chipLabel: { 
-//       fontSize: 11, 
-//       color: t.secondaryText,
-//       marginTop: 4,
-//       fontWeight: "600",
-//       textTransform: "uppercase",
-//       letterSpacing: 0.5
-//     },
-//     menuList: { 
-//       marginTop: 8,
-//     },
-//     menuButton: { 
-//       flexDirection: "row", 
-//       justifyContent: "space-between", 
-//       alignItems: "center", 
-//       paddingVertical: 18, 
-//       paddingHorizontal: 20, 
-//       backgroundColor: t.cardBg, 
-//       borderRadius: 100, 
-//       marginBottom: 14, 
-//       borderWidth: 1, 
-//       borderColor: t.border,
-//     },
-//     menuLeft: { 
-//       flexDirection: "row", 
-//       alignItems: "center",
-//       flex: 1,
-//     },
-//     menuIcon: { 
-//       padding: 10, 
-//       backgroundColor: "rgba(255, 255, 255, 0.05)", 
-//       borderRadius: 100, 
-//       marginRight: 16,
-//       borderWidth: 1,
-//       borderColor: "rgba(255, 255, 255, 0.05)"
-//     },
-//     menuTextWrap: {
-//       flex: 1,
-//       paddingRight: 8,
-//     },
-//     menuTitle: { 
-//       fontSize: 16,
-//       fontWeight: "600", 
-//       color: t.primaryText 
-//     },
-//     menuSubtitle: { 
-//       fontSize: 12, 
-//       color: t.secondaryText,
-//       marginTop: 1 
-//     },
-//     simpleRow: { 
-//       flexDirection: "row", 
-//       alignItems: "center", 
-//       paddingVertical: 18, // Matched perfectly to menuButton vertical padding
-//       paddingHorizontal: 20, // Matched perfectly to menuButton horizontal padding
-//       borderRadius: 100, // Identical structural pill radius
-//       backgroundColor: t.cardBg, 
-//       marginBottom: 14, 
-//       borderWidth: 1, 
-//       borderColor: t.border, 
-//       justifyContent: "space-between" 
-//     },
-//     simpleRowText: { 
-//       color: t.primaryText,
-//       fontWeight: "600",
-//       fontSize: 16
-//     },
-//     deleteRow: { 
-//       flexDirection: "row", // Aligns content correctly across full capsule bar width
-//       alignItems: "center", 
-//       paddingVertical: 18, // Matched perfectly to menuButton vertical padding
-//       paddingHorizontal: 20, // Matched perfectly to menuButton horizontal padding
-//       marginTop: 8, 
-//       borderRadius: 100, 
-//       backgroundColor: "rgba(239, 68, 68, 0.05)", 
-//       borderWidth: 1, 
-//       borderColor: "rgba(239, 68, 68, 0.15)",
-//       justifyContent: "center"
-//     },
-//     deleteText: { 
-//       color: "#f87171", 
-//       fontWeight: "600",
-//       fontSize: 16
-//     },
-//     loadingOverlay: { 
-//       position: "absolute", 
-//       top: 0, 
-//       left: 0, 
-//       right: 0, 
-//       bottom: 0, 
-//       justifyContent: "center", 
-//       alignItems: "center", 
-//       backgroundColor: "rgba(10, 14, 26, 0.75)" 
-//     },
-//   });
-
-
-// }
-
-// export default ProfileScreen;
 import React, { useState, useEffect } from "react";
 import {
+  StyleSheet,
   View,
   Text,
   ScrollView,
   TouchableOpacity,
   Image,
-  SafeAreaView,
-  Switch,
-  Alert,
+  Modal,
   ActivityIndicator,
-  StyleSheet,
-  useColorScheme,
+  Alert,
+  Platform,
+  Switch,
+  Dimensions,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import {
-  Settings,
-  MapPin,
   LogOut,
   Bell,
-  Shield,
+  HelpCircle,
+  CircleUserRound,
+  KeyRound,
   ChevronRight,
-  ChevronLeft,
+  Fingerprint,
   ShieldCheck,
   Sun,
   Moon,
-  Camera,
   FileText,
-  User,
-  CreditCard,
-  KeyIcon,
+  Trash2,
+  UserCheck,
 } from "lucide-react-native";
-import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
+import { doc, deleteDoc, onSnapshot } from "firebase/firestore";
+import { auth, db } from "../../lib/firebase";
 import { useAuth } from "../../context/AuthContext";
 import { useTheme } from "../../context/ThemeContext";
-import { db, storage, auth } from "../../lib/firebase";
-import {
-  doc,
-  updateDoc,
-  collection,
-  query,
-  where,
-  onSnapshot,
-  deleteDoc,
-} from "firebase/firestore";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { deleteUser } from "firebase/auth";
+import { safeDeleteStorageFile } from "../../utils/storageCleanup";
 import VerificationBadge from "../../components/verificationbadge";
-import UpdateProfile from "../../components/UpdateProfile";
-import ChangePassword from "../../components/ChangePassword";
-import UpdateProfileModal from "../../components/UpdateProfileModal";
+import { calculateVerificationLevel } from "../../lib/verification";
 import KYCVerification from "../../components/kycverification";
+import TrustVerification from "../../components/TrustVerification";
+import { BlurView } from "expo-blur";
+import Skeleton from "../../components/ui/Skeleton";
 
-const ProfileScreen = () => {
-  const { user, logout, updateProfile } = useAuth();
-  const router = useRouter();
+// MODAL COMPONENT IMPORTS
+import UpdateProfile from "../../components/UpdateProfileModal";
+import ResetPassword from "../../components/ResetPasswordModal";
+
+const { width } = Dimensions.get("window");
+const SQUARE_CARD_SIZE = width * 0.58;
+
+const Profile = () => {
+  const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const colorScheme = useColorScheme();
+  const router = useRouter();
+  const isDark = theme === "dark";
 
-  const [loading, setLoading] = useState(false);
-  const [vaultCount, setVaultCount] = useState(0);
-  const [unreadCount, setUnreadCount] = useState(0);
-  const [showUpdateModal, setShowUpdateModal] = useState(false);
-  
-  // View switcher states
-  const [currentView, setCurrentView] = useState("profile"); // "profile" or "change-password"
-  const [currentPwd, setCurrentPwd] = useState("");
-  const [newPwd, setNewPwd] = useState("");
-
-  // Theming
-  const isDark = colorScheme === "dark" || theme === "dark";
-  const tokens = isDark
-    ? {
-        background: "#0A0B0D",
-        canvas: "#071226",
-        headerBg: "#0f172a",
-        cardBg: "#0e1520",
-        accent: "#C5A46E",
-        primaryText: "#FFFFFF",
-        secondaryText: "#BFC3C8",
-        muted: "#94a3b8",
-        border: "#1f2937",
-        positive: "#34D399",
-      }
-    : {
-        background: "#FFFFFF",
-        canvas: "#F7F8FA",
-        headerBg: "#FFFFFF",
-        cardBg: "#F8FBFF",
-        accent: "#2B3467",
-        primaryText: "#0F172A",
-        secondaryText: "#475569",
-        muted: "#94a3b8",
-        border: "#e6eef8",
-        positive: "#10B981",
-      };
-
-  const styles = getProfileStyles(tokens);
+  // Modal display states
+  const [showUpdateProfileModal, setShowUpdateProfileModal] = useState(false);
+  const [showResetPasswordModal, setShowResetPasswordModal] = useState(false);
+  const [showDeleteAccountConfirm, setShowDeleteAccountConfirm] =
+    useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [unread, setUnread] = useState(0);
+  const [pushNotificationsEnabled, setPushNotificationsEnabled] =
+    useState(true);
+  // local profile copy that follows Firestore document changes (keeps avatar in sync)
+  const [profileUser, setProfileUser] = useState(user);
 
   useEffect(() => {
+    setProfileUser(user);
     if (!user) return;
-    const q = query(collection(db, "vault"), where("userId", "==", user.id));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setVaultCount(snapshot.size);
-    });
-    return () => unsubscribe();
-  }, [user]);
-
-  useEffect(() => {
-    if (!user || !user.id) {
-      setUnreadCount(0);
-      return;
-    }
-    const nRef = collection(db, "notifications");
-    const q = query(
-      nRef,
-      where("userId", "==", user.id),
-      where("read", "==", false),
-    );
+    const userRef = doc(db, "users", user.id);
     const unsub = onSnapshot(
-      q,
+      userRef,
       (snap) => {
-        setUnreadCount(snap.size);
+        if (snap.exists()) {
+          setProfileUser((prev) => ({ ...prev, ...snap.data() }));
+        }
       },
       (err) => {
-        console.warn("[Profile] unread notifications subscribe failed", err);
+        console.error("User snapshot error", err);
       },
     );
     return () => unsub();
   }, [user]);
 
-  const handleImagePick = async () => {
-    const permissionResult =
-      await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (permissionResult.granted === false) {
-      Alert.alert(
-        "Permission Required",
-        "Allow DirectRent to access your photos to update your profile.",
-      );
-      return;
-    }
+  if (!user) return null;
 
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.7,
-    });
-
-    if (!result.canceled) {
-      uploadAvatar(result.assets[0].uri);
-    }
-  };
-
-  const uploadAvatar = async (uri) => {
-    setLoading(true);
-    try {
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      const storageRef = ref(storage, `avatars/${user.id}`);
-      await uploadBytes(storageRef, blob);
-      const url = await getDownloadURL(storageRef);
-
-      await updateDoc(doc(db, "users", user.id), { avatarUrl: url });
-      await updateProfile({ avatarUrl: url });
-      Alert.alert("Success", "Profile photo updated!");
-    } catch (error) {
-      Alert.alert("Error", "Failed to upload image.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleChangePassword = async () => {
-    if (!currentPwd || !newPwd) {
-      Alert.alert("Error", "Please fill in all password fields.");
-      return;
-    }
-    setLoading(true);
-    try {
-      // Your password change integration logic goes here
-      Alert.alert("Success", "Password updated successfully!");
-      setCurrentPwd("");
-      setNewPwd("");
-      setCurrentView("profile");
-    } catch (error) {
-      Alert.alert("Error", error.message || "Failed to update password.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const confirmLogout = () => {
-    Alert.alert("Log Out", "Are you sure you want to log out of DirectRent?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Log Out",
-        style: "destructive",
-        onPress: async () => {
-          await logout();
-          router.replace("/auth/home");
-        },
-      },
-    ]);
-  };
-
-  const handleDeleteAccount = () => {
-    Alert.alert(
-      "Delete Account",
-      "This will permanently delete your account and all local profile data. This cannot be undone. Are you sure?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            setLoading(true);
-            try {
-              try {
-                await deleteDoc(doc(db, "users", user.id));
-              } catch (e) {
-                console.warn("[Profile] failed to delete user doc", e);
-              }
-
-              try {
-                if (auth.currentUser && auth.currentUser.uid === user.id) {
-                  await deleteUser(auth.currentUser);
-                } else if (auth.currentUser) {
-                  await deleteUser(auth.currentUser);
-                } else {
-                  console.warn("[Profile] no auth.currentUser available to delete");
-                }
-              } catch (e) {
-                console.warn("[Profile] deleteUser failed", e);
-                if (e?.code === "auth/requires-recent-login") {
-                  Alert.alert(
-                    "Re-authentication required",
-                    "Please sign out and sign in again, then try deleting your account.",
-                  );
-                  await logout();
-                  router.replace("/home");
-                  return;
-                } else {
-                  Alert.alert("Error", e?.message || "Failed to delete account");
-                }
-              }
-
-              try {
-                await logout();
-              } catch (e) {}
-              Alert.alert("Account deleted", "Your account has been deleted.");
-              router.replace("/home");
-            } finally {
-              setLoading(false);
-            }
-          },
-        },
-      ],
+  // show skeleton while profileUser is syncing from Firestore
+  if (!profileUser) {
+    return (
+      <SafeAreaView
+        style={[styles.screen, { backgroundColor: "#fff" }]}
+        edges={["top"]}
+      >
+        <Skeleton type="profile" isDark={isDark} />
+      </SafeAreaView>
     );
+  }
+
+  const handleToggleTheme = () => {
+    toggleTheme();
   };
+
+  const handleLogoutWithNavigation = async () => {
+    try {
+      await logout();
+      router.replace("/home");
+    } catch (error) {
+      console.error("Logout navigation failed:", error);
+      router.replace("/");
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    setIsLoading(true);
+    try {
+      const userRef = doc(db, "users", user.id);
+      if (user.avatarUrl && user.avatarUrl.includes("firebasestorage")) {
+        await safeDeleteStorageFile(user.avatarUrl);
+      }
+      await deleteDoc(userRef);
+      const currentUser = auth.currentUser;
+      if (currentUser) {
+        await currentUser.delete();
+      }
+      await handleLogoutWithNavigation();
+    } catch (error) {
+      console.error("Failed to delete account:", error);
+      Alert.alert(
+        "Re-authentication Required",
+        "For security reasons, sensitive actions like account deletion require a fresh login. Please log out, log back in, and try again immediately.",
+      );
+    } finally {
+      setIsLoading(false);
+      setShowDeleteAccountConfirm(false);
+    }
+  };
+
+  const currentLevel = calculateVerificationLevel(profileUser || user);
+
+  // Matured Glassmorphic Design Tokens with premium light grey-blue frost accents
+  const tokens = isDark
+    ? {
+        canvas: "#040814",
+        cardBg: "rgba(51, 65, 85, 0.45)",
+        textMain: "#ffffff",
+        textSubtle: "#cbd5e1",
+        border: "rgba(148, 163, 184, 0.22)",
+        accent: "#818cf8",
+        accentBg: "rgba(129, 140, 248, 0.18)",
+        divider: "rgba(255, 255, 255, 0.08)",
+        cardSolidBg: "#0f172a",
+      }
+    : {
+        canvas: "#f1f5f9",
+        cardBg: "rgba(255, 255, 255, 0.55)",
+        textMain: "#0f172a",
+        textSubtle: "#475569",
+        border: "rgba(15, 23, 42, 0.06)",
+        accent: "#4f46e5",
+        accentBg: "rgba(79, 70, 229, 0.1)",
+        divider: "rgba(15, 23, 42, 0.05)",
+        cardSolidBg: "#ffffff",
+      };
 
   return (
-    <SafeAreaView style={styles.container}>
-      {/* Dynamic Header View Mapping */}
-      <View style={styles.header}>
-        {currentView === "change-password" ? (
-          <>
-            <TouchableOpacity
-              style={styles.headerButton}
-              onPress={() => setCurrentView("profile")}
-            >
-              <ChevronLeft size={20} color={tokens.primaryText} />
-            </TouchableOpacity>
-            <Text style={styles.headerTitle}>Update Password</Text>
-            <View style={{ width: 42 }} />
-          </>
-        ) : (
-          <>
-            <Text style={styles.headerTitle}>Profile</Text>
-            <TouchableOpacity
-              style={styles.headerButton}
-              onPress={() => router.push("/app/notification")}
-            >
-              <Bell size={20} color={tokens.primaryText} />
-              {unreadCount > 0 && (
-                <View style={styles.headerBadge}>
-                  <Text style={styles.headerBadgeText}>
-                    {unreadCount > 99 ? "99+" : unreadCount}
-                  </Text>
-                </View>
-              )}
-            </TouchableOpacity>
-          </>
-        )}
+    <SafeAreaView
+      style={[styles.screen, { backgroundColor: tokens.canvas }]}
+      edges={["top"]}
+    >
+      {/* Header View */}
+      <View style={[styles.header, { borderColor: tokens.border }]}>
+        <BlurView
+          intensity={isDark ? 20 : 50}
+          tint={isDark ? "dark" : "light"}
+          style={StyleSheet.absoluteFill}
+        />
+        <Text style={[styles.headerTitle, { color: tokens.textMain }]}>
+          Profile
+        </Text>
+        <TouchableOpacity
+          onPress={() => router.push("/app/notification")}
+          style={[
+            styles.headerBtn,
+            { borderColor: tokens.border, backgroundColor: tokens.cardBg },
+          ]}
+        >
+          <Bell size={18} color={tokens.textMain} />
+          {unread > 0 && <View style={styles.notifDot} />}
+        </TouchableOpacity>
       </View>
 
       <ScrollView
-        showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
       >
-        {currentView === "change-password" ? (
-          /* Render your ChangePassword Component dynamically inline */
-          <ChangePassword
-            isDark={isDark}
-            currentPwd={currentPwd}
-            setCurrentPwd={setCurrentPwd}
-            newPwd={newPwd}
-            setNewPwd={setNewPwd}
-            handleChange={handleChangePassword}
-            loading={loading}
+        {/* Full Width Top Profile Glass Card */}
+        <View
+          style={[
+            styles.squareUserCard,
+            { borderColor: tokens.border, backgroundColor: tokens.cardBg },
+          ]}
+        >
+          <BlurView
+            intensity={isDark ? 35 : 65}
+            tint={isDark ? "dark" : "light"}
+            style={StyleSheet.absoluteFill}
           />
-        ) : (
-          /* Primary Profile Flow Dashboard View */
-          <>
-            <View style={styles.topCard}>
-              <TouchableOpacity
-                onPress={handleImagePick}
-                style={styles.avatarTouchable}
-              >
-                <View style={styles.avatarWrapperLarge}>
-                  {user?.avatarUrl ? (
-                    <Image
-                      source={{ uri: user.avatarUrl }}
-                      style={styles.avatarImageLarge}
-                    />
-                  ) : (
-                    <View style={styles.avatarPlaceholder}>
-                      <User size={48} color={tokens.positive} />
-                    </View>
-                  )}
-                </View>
-                <View style={styles.cameraBadge}>
-                  <Camera size={14} color="#fff" />
-                </View>
-              </TouchableOpacity>
-
-              <View style={{ alignItems: "center", marginTop: 12 }}>
-                <Text style={styles.nameLarge}>
-                  {user?.firstName} {user?.lastName}
-                </Text>
-                <Text style={styles.emailText}>{user?.email}</Text>
-                <View style={styles.roleRow}>
-                  <ShieldCheck size={14} color={tokens.accent} />
-                  <Text style={{ marginLeft: 8, fontWeight: "700", color: tokens.primaryText }}>
-                    {user?.role?.toUpperCase() || "USER"}
+          <View style={styles.squareCardInner}>
+            <View
+              style={[styles.avatarGlassRing, { borderColor: tokens.border }]}
+            >
+              {profileUser?.avatarUrl ? (
+                <Image
+                  source={{ uri: profileUser.avatarUrl }}
+                  style={styles.squareAvatarImage}
+                />
+              ) : (
+                <View
+                  style={[
+                    styles.avatarPlaceholderGlass,
+                    { backgroundColor: tokens.accentBg },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.avatarPlaceholderText,
+                      { color: tokens.accent },
+                    ]}
+                  >
+                    {profileUser?.firstName
+                      ? profileUser.firstName.charAt(0)
+                      : profileUser?.email?.charAt(0)}
                   </Text>
                 </View>
-              </View>
-            </View>
-
-            <View style={styles.menuList}>
-              {user?.role && String(user.role).toLowerCase() === "agent" && (
-                <KYCVerification />
               )}
+            </View>
 
-              <ProfileMenuButton
-                icon={<User size={20} color={tokens.accent} />}
-                title="Update Profile"
-                subtitle="Edit personal details"
-                onPress={() => setShowUpdateModal(true)}
-              />
-              <ProfileMenuButton
-                icon={<KeyIcon size={20} color={tokens.accent} />}
-                title="Reset Password"
-                subtitle="Change your password"
-                onPress={() => setCurrentView("change-password")}
-              />
-              <ProfileMenuButton
-                icon={<CreditCard size={20} color={tokens.accent} />}
-                title="Payment Methods"
-                subtitle="Manage rent payments"
-                onPress={() => {}}
-              />
-              <ProfileMenuButton
-                icon={<ShieldCheck size={20} color={tokens.accent} />}
-                title="DirectRent Vault"
-                subtitle={`${vaultCount} documents secured`}
-                onPress={() => {}}
+            <Text
+              style={[styles.squareUserName, { color: tokens.textMain }]}
+              numberOfLines={1}
+            >
+              {profileUser?.firstName
+                ? `${profileUser.firstName} ${profileUser.lastName || ""}`.trim()
+                : "Guest User"}
+            </Text>
+
+            <View style={styles.badgeCenteredContainer}>
+              <VerificationBadge
+                level={currentLevel}
+                role={user.role}
+                showText={false}
               />
             </View>
 
-            <View style={{ marginTop: 10 }}>
-              <TouchableOpacity onPress={toggleTheme} style={styles.simpleRow}>
-                <Text style={styles.simpleRowText}>Toggle Appearance</Text>
-                <Switch value={theme === "dark"} onValueChange={toggleTheme} />
-              </TouchableOpacity>
+            <Text
+              style={[styles.squareUserEmail, { color: tokens.textSubtle }]}
+              numberOfLines={1}
+            >
+              {profileUser?.email ||
+                profileUser?.phoneNumber ||
+                "No contact info"}
+            </Text>
 
-              <TouchableOpacity
-                onPress={confirmLogout}
-                style={[styles.simpleRow, { marginTop: 12 }]}
+            <TouchableOpacity
+              onPress={() => setShowUpdateProfileModal(true)}
+              style={[
+                styles.glassEditBtn,
+                { backgroundColor: tokens.accentBg },
+              ]}
+            >
+              <Text style={[styles.glassEditBtnText, { color: tokens.accent }]}>
+                Edit Profile
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* GENERAL SECTION */}
+        <View style={styles.sectionGroup}>
+          <Text style={[styles.sectionHeading, { color: tokens.textSubtle }]}>
+            GENERAL
+          </Text>
+
+          {/* Edit Profile Card */}
+          <TouchableOpacity
+            onPress={() => setShowUpdateProfileModal(true)}
+            style={[
+              styles.itemCardGlass,
+              { borderColor: tokens.border, backgroundColor: tokens.cardBg },
+            ]}
+          >
+            <BlurView
+              intensity={isDark ? 20 : 45}
+              tint={isDark ? "dark" : "light"}
+              style={StyleSheet.absoluteFill}
+            />
+            <View
+              style={[
+                styles.iconWrapper,
+                { backgroundColor: "rgba(59, 130, 246, 0.12)" },
+              ]}
+            >
+              <CircleUserRound size={18} color="#3b82f6" />
+            </View>
+            <View style={styles.menuMeta}>
+              <Text style={[styles.menuLabel, { color: tokens.textMain }]}>
+                Edit Profile
+              </Text>
+              <Text style={[styles.menuDesc, { color: tokens.textSubtle }]}>
+                Update profile details, picture and location details
+              </Text>
+            </View>
+            <ChevronRight size={14} color={tokens.textSubtle} />
+          </TouchableOpacity>
+
+          {/* KYC Agent Verification Card — Uniform Template styling */}
+          {profileUser?.role === "agent" && (
+            <KYCVerification
+              customCardStyle={[
+                styles.itemCardGlass,
+                { borderColor: tokens.border, backgroundColor: tokens.cardBg },
+              ]}
+              tokens={tokens}
+              isDark={isDark}
+            />
+          )}
+
+          {/* Verify Identity Card */}
+          {profileUser?.role === "tenant" && !profileUser?.phoneVerified && (
+            <TouchableOpacity
+              onPress={() => router.push("/app/verifyphone")}
+              style={[
+                styles.itemCardGlass,
+                { borderColor: tokens.border, backgroundColor: tokens.cardBg },
+              ]}
+            >
+              <BlurView
+                intensity={isDark ? 20 : 45}
+                tint={isDark ? "dark" : "light"}
+                style={StyleSheet.absoluteFill}
+              />
+              <View
+                style={[
+                  styles.iconWrapper,
+                  { backgroundColor: "rgba(249, 115, 22, 0.12)" },
+                ]}
               >
-                <View style={{ flexDirection: "row", alignItems: "center" }}>
-                  <LogOut size={18} color="#ef4444" />
-                  <Text style={{ marginLeft: 12, color: "#ef4444", fontWeight: "700", fontSize: 16 }}>
-                    Sign Out
-                  </Text>
-                </View>
-                <ChevronRight size={20} color="#ef4444" style={{ opacity: 0.4 }} />
+                <Fingerprint size={18} color="#f97316" />
+              </View>
+              <View style={styles.menuMeta}>
+                <Text style={[styles.menuLabel, { color: tokens.textMain }]}>
+                  Verify Identity
+                </Text>
+                <Text style={[styles.menuDesc, { color: tokens.textSubtle }]}>
+                  Add phone number & national NIN credentials
+                </Text>
+              </View>
+              <View style={styles.badgeRequired}>
+                <Text style={styles.badgeRequiredText}>Required</Text>
+              </View>
+              <ChevronRight size={14} color={tokens.textSubtle} />
+            </TouchableOpacity>
+          )}
+
+          {/* Trust Verification Card — Uniform Template styling */}
+          <TrustVerification
+            onVerifyPhone={() => router.push("/app/verifyphone")}
+            customCardStyle={[
+              styles.itemCardGlass,
+              { borderColor: tokens.border, backgroundColor: tokens.cardBg },
+            ]}
+            tokens={tokens}
+            isDark={isDark}
+          />
+
+          {/* Change Password Card */}
+          <TouchableOpacity
+            onPress={() => setShowResetPasswordModal(true)}
+            style={[
+              styles.itemCardGlass,
+              {
+                borderColor: tokens.border,
+                backgroundColor: tokens.cardBg,
+                marginTop: 15,
+              },
+            ]}
+          >
+            <BlurView
+              intensity={isDark ? 20 : 45}
+              tint={isDark ? "dark" : "light"}
+              style={StyleSheet.absoluteFill}
+            />
+            <View
+              style={[
+                styles.iconWrapper,
+                { backgroundColor: "rgba(99, 102, 241, 0.12)" },
+              ]}
+            >
+              <KeyRound size={18} color="#6366f1" />
+            </View>
+            <View style={styles.menuMeta}>
+              <Text style={[styles.menuLabel, { color: tokens.textMain }]}>
+                Change Password
+              </Text>
+              <Text style={[styles.menuDesc, { color: tokens.textSubtle }]}>
+                Update and strengthen account security
+              </Text>
+            </View>
+            <ChevronRight size={14} color={tokens.textSubtle} />
+          </TouchableOpacity>
+
+          {/* Terms of Use Card */}
+          <TouchableOpacity
+            onPress={() => router.push("/app/termofuse")}
+            style={[
+              styles.itemCardGlass,
+              { borderColor: tokens.border, backgroundColor: tokens.cardBg },
+            ]}
+          >
+            <BlurView
+              intensity={isDark ? 20 : 45}
+              tint={isDark ? "dark" : "light"}
+              style={StyleSheet.absoluteFill}
+            />
+            <View
+              style={[
+                styles.iconWrapper,
+                { backgroundColor: "rgba(6, 182, 212, 0.12)" },
+              ]}
+            >
+              <FileText size={18} color="#06b6d4" />
+            </View>
+            <View style={styles.menuMeta}>
+              <Text style={[styles.menuLabel, { color: tokens.textMain }]}>
+                Terms of Use
+              </Text>
+              <Text style={[styles.menuDesc, { color: tokens.textSubtle }]}>
+                DirectRent rules of engagement
+              </Text>
+            </View>
+            <ChevronRight size={14} color={tokens.textSubtle} />
+          </TouchableOpacity>
+
+          {/* Vault Card */}
+          <TouchableOpacity
+            onPress={() => router.push("/app/vault")}
+            style={[
+              styles.itemCardGlass,
+              { borderColor: tokens.border, backgroundColor: tokens.cardBg },
+            ]}
+          >
+            <BlurView
+              intensity={isDark ? 20 : 45}
+              tint={isDark ? "dark" : "light"}
+              style={StyleSheet.absoluteFill}
+            />
+            <View
+              style={[
+                styles.iconWrapper,
+                { backgroundColor: "rgba(245, 158, 11, 0.12)" },
+              ]}
+            >
+              <ShieldCheck size={18} color="#f59e0b" />
+            </View>
+            <View style={styles.menuMeta}>
+              <Text style={[styles.menuLabel, { color: tokens.textMain }]}>
+                DirectRent Vault
+              </Text>
+              <Text style={[styles.menuDesc, { color: tokens.textSubtle }]}>
+                Safe storage for contracts & rent receipts
+              </Text>
+            </View>
+            <ChevronRight size={14} color={tokens.textSubtle} />
+          </TouchableOpacity>
+        </View>
+
+        {/* PREFERENCES SECTION */}
+        <View style={styles.sectionGroup}>
+          <Text style={[styles.sectionHeading, { color: tokens.textSubtle }]}>
+            PREFERENCES
+          </Text>
+
+          {/* Dark Mode Card */}
+          <View
+            style={[
+              styles.itemCardGlass,
+              { borderColor: tokens.border, backgroundColor: tokens.cardBg },
+            ]}
+          >
+            <BlurView
+              intensity={isDark ? 20 : 45}
+              tint={isDark ? "dark" : "light"}
+              style={StyleSheet.absoluteFill}
+            />
+            <View
+              style={[
+                styles.iconWrapper,
+                isDark
+                  ? { backgroundColor: "rgba(245, 158, 11, 0.15)" }
+                  : { backgroundColor: "rgba(148, 163, 184, 0.12)" },
+              ]}
+            >
+              {isDark ? (
+                <Sun size={18} color="#f59e0b" />
+              ) : (
+                <Moon size={18} color="#475569" />
+              )}
+            </View>
+            <View style={styles.menuMeta}>
+              <Text style={[styles.menuLabel, { color: tokens.textMain }]}>
+                Dark Mode
+              </Text>
+              <Text style={[styles.menuDesc, { color: tokens.textSubtle }]}>
+                Switch between light and dark themes
+              </Text>
+            </View>
+            <Switch
+              value={isDark}
+              onValueChange={handleToggleTheme}
+              trackColor={{ false: "#e2e8f0", true: "#3b82f6" }}
+              thumbColor={Platform.OS === "android" ? "#ffffff" : undefined}
+            />
+          </View>
+
+          {/* Push Notifications Card */}
+          <View
+            style={[
+              styles.itemCardGlass,
+              { borderColor: tokens.border, backgroundColor: tokens.cardBg },
+            ]}
+          >
+            <BlurView
+              intensity={isDark ? 20 : 45}
+              tint={isDark ? "dark" : "light"}
+              style={StyleSheet.absoluteFill}
+            />
+            <View
+              style={[
+                styles.iconWrapper,
+                { backgroundColor: "rgba(59, 130, 246, 0.12)" },
+              ]}
+            >
+              <Bell size={18} color="#3b82f6" />
+            </View>
+            <View style={styles.menuMeta}>
+              <Text style={[styles.menuLabel, { color: tokens.textMain }]}>
+                Push Notifications
+              </Text>
+              <Text style={[styles.menuDesc, { color: tokens.textSubtle }]}>
+                Receive real-time chat updates
+              </Text>
+            </View>
+            <Switch
+              value={pushNotificationsEnabled}
+              onValueChange={setPushNotificationsEnabled}
+              trackColor={{ false: "#e2e8f0", true: "#3b82f6" }}
+              thumbColor={Platform.OS === "android" ? "#ffffff" : undefined}
+            />
+          </View>
+        </View>
+
+        {/* ACCOUNT MANAGEMENT SECTION */}
+        <View style={styles.sectionGroup}>
+          <Text style={[styles.sectionHeading, { color: tokens.textSubtle }]}>
+            ACCOUNT MANAGEMENT
+          </Text>
+
+          {/* FAQ Card */}
+          <TouchableOpacity
+            onPress={() => router.push("/app/faq")}
+            style={[
+              styles.itemCardGlass,
+              { borderColor: tokens.border, backgroundColor: tokens.cardBg },
+            ]}
+          >
+            <BlurView
+              intensity={isDark ? 20 : 45}
+              tint={isDark ? "dark" : "light"}
+              style={StyleSheet.absoluteFill}
+            />
+            <View
+              style={[
+                styles.iconWrapper,
+                { backgroundColor: "rgba(99, 102, 241, 0.12)" },
+              ]}
+            >
+              <HelpCircle size={18} color="#6366f1" />
+            </View>
+            <View style={styles.menuMeta}>
+              <Text style={[styles.menuLabel, { color: tokens.textMain }]}>
+                FAQ
+              </Text>
+              <Text style={[styles.menuDesc, { color: tokens.textSubtle }]}>
+                Find quick answers to common questions
+              </Text>
+            </View>
+            <ChevronRight size={14} color={tokens.textSubtle} />
+          </TouchableOpacity>
+
+          {/* Log Out Card */}
+          <TouchableOpacity
+            onPress={() => {
+              Alert.alert(
+                "Log Out",
+                "Are you sure you want to log out of your session?",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Log Out",
+                    style: "destructive",
+                    onPress: handleLogoutWithNavigation,
+                  },
+                ],
+              );
+            }}
+            style={[
+              styles.itemCardGlass,
+              { borderColor: tokens.border, backgroundColor: tokens.cardBg },
+            ]}
+          >
+            <BlurView
+              intensity={isDark ? 20 : 45}
+              tint={isDark ? "dark" : "light"}
+              style={StyleSheet.absoluteFill}
+            />
+            <View
+              style={[
+                styles.iconWrapper,
+                { backgroundColor: "rgba(148, 163, 184, 0.15)" },
+              ]}
+            >
+              <LogOut size={18} color={isDark ? "#94a3b8" : "#475569"} />
+            </View>
+            <View style={styles.menuMeta}>
+              <Text style={[styles.menuLabel, { color: tokens.textMain }]}>
+                Log Out
+              </Text>
+              <Text style={[styles.menuDesc, { color: tokens.textSubtle }]}>
+                Securely end your active app session
+              </Text>
+            </View>
+            <ChevronRight size={14} color={tokens.textSubtle} />
+          </TouchableOpacity>
+
+          {/* Delete Account Card */}
+          <TouchableOpacity
+            onPress={() => setShowDeleteAccountConfirm(true)}
+            style={[
+              styles.itemCardGlass,
+              { borderColor: tokens.border, backgroundColor: tokens.cardBg },
+            ]}
+          >
+            <BlurView
+              intensity={isDark ? 20 : 45}
+              tint={isDark ? "dark" : "light"}
+              style={StyleSheet.absoluteFill}
+            />
+            <View
+              style={[
+                styles.iconWrapper,
+                { backgroundColor: "rgba(244, 63, 94, 0.12)" },
+              ]}
+            >
+              <Trash2 size={18} color="#f43f5e" />
+            </View>
+            <View style={styles.menuMeta}>
+              <Text style={[styles.menuLabel, { color: "#f43f5e" }]}>
+                Delete Account
+              </Text>
+              <Text style={[styles.menuDesc, { color: "#fb7185" }]}>
+                Permanently erase profile and data configurations
+              </Text>
+            </View>
+            <ChevronRight size={14} color="#fb7185" />
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+
+      {/* UPDATE PROFILE INTEGRATION MODAL */}
+      <UpdateProfile
+        visible={showUpdateProfileModal}
+        onClose={() => setShowUpdateProfileModal(false)}
+      />
+
+      {/* RESET PASSWORD INTEGRATION MODAL */}
+      <ResetPassword
+        visible={showResetPasswordModal}
+        onClose={() => setShowResetPasswordModal(false)}
+      />
+
+      {/* Account Erasure Confirmation Overlay */}
+      <Modal
+        visible={showDeleteAccountConfirm}
+        animationType="fade"
+        transparent
+      >
+        <View style={styles.modalOverlay}>
+          <BlurView
+            intensity={20}
+            tint="dark"
+            style={StyleSheet.absoluteFill}
+          />
+          <View
+            style={[
+              styles.modalContent,
+              {
+                backgroundColor: tokens.cardSolidBg,
+                borderColor: tokens.border,
+              },
+            ]}
+          >
+            <View style={styles.dangerModalHeader}>
+              <View style={styles.dangerIconContainer}>
+                <Trash2 size={22} color="#f43f5e" />
+              </View>
+              <Text
+                style={[
+                  styles.modalTitle,
+                  { color: tokens.textMain, marginTop: 12 },
+                ]}
+              >
+                Delete Account
+              </Text>
+            </View>
+
+            <Text
+              style={[styles.dangerModalBody, { color: tokens.textSubtle }]}
+            >
+              Are you absolutely sure? This will permanently delete your
+              identity files, clearing out your custom preferences and settings.
+              This action cannot be undone.
+            </Text>
+
+            <View style={styles.modalActionRow}>
+              <TouchableOpacity
+                onPress={() => setShowDeleteAccountConfirm(false)}
+                style={[
+                  styles.dangerRowBtn,
+                  { backgroundColor: isDark ? "#1e293b" : "#f1f5f9" },
+                ]}
+                disabled={isLoading}
+              >
+                <Text
+                  style={[styles.dangerRowBtnText, { color: tokens.textMain }]}
+                >
+                  Cancel
+                </Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 onPress={handleDeleteAccount}
-                style={[styles.simpleRow, styles.deleteRow, { marginTop: 12 }]}
+                style={[styles.dangerRowBtn, { backgroundColor: "#f43f5e" }]}
+                disabled={isLoading}
               >
-                <Text style={styles.deleteText}>Delete Account</Text>
+                {isLoading ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={[styles.dangerRowBtnText, { color: "#fff" }]}>
+                    Delete
+                  </Text>
+                )}
               </TouchableOpacity>
             </View>
-          </>
-        )}
-
-        <UpdateProfileModal
-          visible={showUpdateModal}
-          onClose={() => setShowUpdateModal(false)}
-        />
-      </ScrollView>
-
-      {loading && (
-        <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color={tokens.accent} />
+          </View>
         </View>
-      )}
+      </Modal>
     </SafeAreaView>
   );
 };
 
-const ProfileMenuButton = ({ icon, title, subtitle, onPress }) => {
-  const { theme } = useTheme();
-  const colorScheme = useColorScheme();
-  const isDarkLocal = colorScheme === "dark" || theme === "dark";
-  const tokensLocal = isDarkLocal
-    ? {
-        background: "#0d1321",
-        canvas: "#0a0e1a",
-        headerBg: "rgba(10, 14, 26, 0.85)",
-        cardBg: "rgba(30, 41, 59, 0.25)",
-        accent: "#7c3aed",
-        primaryText: "#FFFFFF",
-        secondaryText: "#94a3b8",
-        muted: "#64748b",
-        border: "rgba(255, 255, 255, 0.08)",
-        positive: "#38bdf8",
-      }
-    : {
-        background: "#f8fafc",
-        canvas: "#f1f5f9",
-        headerBg: "rgba(255, 255, 255, 0.85)",
-        cardBg: "rgba(255, 255, 255, 0.5)",
-        accent: "#2563eb",
-        primaryText: "#0f172a",
-        secondaryText: "#475569",
-        muted: "#94a3b8",
-        border: "rgba(15, 23, 42, 0.06)",
-        positive: "#2563eb",
-      };
+export default Profile;
 
-  const stylesLocal = getProfileStyles(tokensLocal);
-  const chevronColor = isDarkLocal ? "#94a3b8" : "#64748b";
+const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+  },
+  header: {
+    height: 64,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    position: "relative",
+    overflow: "hidden",
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    letterSpacing: -0.4,
+  },
+  headerBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    position: "relative",
+    overflow: "hidden",
+  },
+  notifDot: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    width: 6,
+    height: 6,
+    backgroundColor: "#ef4444",
+    borderRadius: 100,
+  },
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 40,
+  },
 
-  return (
-    <TouchableOpacity onPress={onPress} style={stylesLocal.menuButton}>
-      <View style={stylesLocal.menuLeft}>
-        <View style={stylesLocal.menuIcon}>{icon}</View>
-        <View style={stylesLocal.menuTextWrap}>
-          <Text style={stylesLocal.menuTitle}>{title}</Text>
-          <Text style={stylesLocal.menuSubtitle}>{subtitle}</Text>
-        </View>
-      </View>
-      <ChevronRight size={20} color={chevronColor} />
-    </TouchableOpacity>
-  );
-};
+  // Frosted Light Grey-Blue Top Profile Layout
+  squareUserCard: {
+    width: "100%",
+    height: SQUARE_CARD_SIZE,
+    borderRadius: 14,
+    borderWidth: 1,
+    overflow: "hidden",
+    marginBottom: 28, // Clear separation from headers
+  },
+  squareCardInner: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 14,
+  },
+  avatarGlassRing: {
+    borderWidth: 1,
+    padding: 3,
+    borderRadius: 100,
+    marginBottom: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  squareAvatarImage: {
+    width: 62,
+    height: 62,
+    borderRadius: 100,
+  },
+  avatarPlaceholderGlass: {
+    width: 62,
+    height: 62,
+    borderRadius: 100,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarPlaceholderText: {
+    fontSize: 22,
+    fontWeight: "900",
+  },
+  squareUserName: {
+    fontSize: 15,
+    fontWeight: "800",
+    letterSpacing: -0.3,
+    textAlign: "center",
+    marginBottom: 4,
+    paddingHorizontal: 6,
+  },
+  badgeCenteredContainer: {
+    marginBottom: 6,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  squareUserEmail: {
+    fontSize: 11,
+    fontWeight: "500",
+    textAlign: "center",
+    marginBottom: 12,
+    paddingHorizontal: 8,
+  },
+  glassEditBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+  },
+  glassEditBtnText: {
+    fontSize: 11,
+    fontWeight: "800",
+  },
 
-function getProfileStyles(t) {
-  return StyleSheet.create({
-    container: {
-      flex: 1,
-      backgroundColor: t.canvas,
-    },
-    header: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "center",
-      paddingHorizontal: 20,
-      paddingVertical: 16,
-      borderBottomWidth: 1,
-      borderBottomColor: t.border,
-      backgroundColor: t.headerBg,
-    },
-    headerTitle: {
-      fontSize: 20,
-      fontWeight: "700",
-      color: t.primaryText,
-      letterSpacing: -0.3,
-    },
-    headerButton: {
-      padding: 10,
-      borderRadius: 14,
-      backgroundColor: "rgba(255, 255, 255, 0.03)",
-      borderWidth: 1,
-      borderColor: t.border,
-      justifyContent: "center",
-      alignItems: "center",
-    },
-    headerBadge: {
-      position: "absolute",
-      top: -2,
-      right: -2,
-      backgroundColor: "#ef4444",
-      paddingHorizontal: 6,
-      paddingVertical: 2,
-      borderRadius: 10,
-      borderWidth: 1.5,
-      borderColor: t.background,
-    },
-    headerBadgeText: {
-      color: "#fff",
-      fontSize: 9,
-      fontWeight: "800",
-    },
-    scrollContent: {
-      paddingHorizontal: 20,
-      paddingTop: 24,
-      paddingBottom: 40,
-    },
-    topCard: {
-      paddingVertical: 32,
-      paddingHorizontal: 24,
-      borderRadius: 36,
-      alignItems: "center",
-      marginBottom: 20,
-      backgroundColor: t.cardBg,
-      borderWidth: 1,
-      borderColor: t.border,
-      shadowColor: "#000",
-      shadowOffset: { width: 0, height: 12 },
-      shadowOpacity: 0.2,
-      shadowRadius: 24,
-      elevation: 6,
-    },
-    avatarTouchable: {
-      position: "relative",
-    },
-    avatarWrapperLarge: {
-      width: 110,
-      height: 110,
-      borderRadius: 55,
-      overflow: "hidden",
-      justifyContent: "center",
-      alignItems: "center",
-      backgroundColor: "rgba(255, 255, 255, 0.02)",
-      borderWidth: 2,
-      borderColor: "rgba(255, 255, 255, 0.4)",
-    },
-    avatarImageLarge: {
-      width: "100%",
-      height: "100%",
-    },
-    avatarPlaceholder: {
-      justifyContent: "center",
-      alignItems: "center",
-      flex: 1,
-    },
-    cameraBadge: {
-      position: "absolute",
-      bottom: -2,
-      right: -2,
-      backgroundColor: "rgba(255, 255, 255, 0.15)",
-      padding: 8,
-      borderRadius: 20,
-      borderWidth: 1,
-      borderColor: "rgba(255, 255, 255, 0.25)",
-    },
-    nameLarge: {
-      fontSize: 24,
-      fontWeight: "700",
-      color: t.primaryText,
-      letterSpacing: -0.5,
-      textAlign: "center",
-    },
-    emailText: {
-      color: t.secondaryText,
-      fontSize: 14,
-      marginTop: 4,
-      fontWeight: "400",
-    },
-    roleRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      marginTop: 12,
-      backgroundColor: "rgba(255, 255, 255, 0.05)",
-      paddingHorizontal: 16,
-      paddingVertical: 6,
-      borderRadius: 24,
-      borderWidth: 1,
-      borderColor: "rgba(255, 255, 255, 0.1)",
-    },
-    menuList: {
-      marginTop: 8,
-    },
-    menuButton: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "center",
-      paddingVertical: 18,
-      paddingHorizontal: 20,
-      backgroundColor: t.cardBg,
-      borderRadius: 100,
-      marginBottom: 14,
-      borderWidth: 1,
-      borderColor: t.border,
-    },
-    menuLeft: {
-      flexDirection: "row",
-      alignItems: "center",
-      flex: 1,
-    },
-    menuIcon: {
-      padding: 10,
-      backgroundColor: "rgba(255, 255, 255, 0.05)",
-      borderRadius: 100,
-      marginRight: 16,
-      borderWidth: 1,
-      borderColor: "rgba(255, 255, 255, 0.05)",
-    },
-    menuTextWrap: {
-      flex: 1,
-      paddingRight: 8,
-    },
-    menuTitle: {
-      fontSize: 16,
-      fontWeight: "600",
-      color: t.primaryText,
-    },
-    menuSubtitle: {
-      fontSize: 12,
-      color: t.secondaryText,
-      marginTop: 1,
-    },
-    simpleRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      paddingVertical: 18,
-      paddingHorizontal: 20,
-      borderRadius: 100,
-      backgroundColor: t.cardBg,
-      marginBottom: 14,
-      borderWidth: 1,
-      borderColor: t.border,
-      justifyContent: "space-between",
-    },
-    simpleRowText: {
-      color: t.primaryText,
-      fontWeight: "600",
-      fontSize: 16,
-    },
-    deleteRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      paddingVertical: 18,
-      paddingHorizontal: 20,
-      marginTop: 8,
-      borderRadius: 100,
-      backgroundColor: "rgba(239, 68, 68, 0.05)",
-      borderWidth: 1,
-      borderColor: "rgba(239, 68, 68, 0.15)",
-      justifyContent: "center",
-    },
-    deleteText: {
-      color: "#f87171",
-      fontWeight: "600",
-      fontSize: 16,
-    },
-    loadingOverlay: {
-      position: "absolute",
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      justifyContent: "center",
-      alignItems: "center",
-      backgroundColor: "rgba(10, 14, 26, 0.75)",
-    },
-  });
-}
+  // Section layout configurations
+  sectionGroup: {
+    marginBottom: 26, // Increased spacing between discrete component headings
+  },
+  sectionHeading: {
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1.2,
+    paddingLeft: 6,
+    marginBottom: 12, // More headroom for individual item cards
+  },
 
-export default ProfileScreen;
+  // Premium Isolated Frosted Glassmorphic Item Cards
+  itemCardGlass: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    overflow: "hidden",
+    marginBottom: 16, // Noticeable item grid distribution spacing context
+  },
+  iconWrapper: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 2,
+  },
+  menuMeta: {
+    flex: 1,
+    marginLeft: 14,
+    zIndex: 2,
+  },
+  menuLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  menuDesc: {
+    fontSize: 11,
+    fontWeight: "500",
+    marginTop: 2,
+  },
+  badgeRequired: {
+    backgroundColor: "rgba(239, 68, 68, 0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.2)",
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+    borderRadius: 99,
+    marginRight: 6,
+    zIndex: 2,
+  },
+  badgeRequiredText: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: "#ef4444",
+    textTransform: "uppercase",
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    padding: 24,
+    backgroundColor: "rgba(0,0,0,0.4)",
+  },
+  modalContent: {
+    borderRadius: 14,
+    padding: 24,
+    borderWidth: 1,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  dangerModalHeader: {
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  dangerIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 100,
+    backgroundColor: "rgba(244, 63, 94, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dangerModalBody: {
+    fontSize: 13,
+    textAlign: "center",
+    lineHeight: 18,
+    marginBottom: 20,
+    paddingHorizontal: 4,
+  },
+  modalActionRow: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  dangerRowBtn: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dangerRowBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
+});
