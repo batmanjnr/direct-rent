@@ -1,4 +1,10 @@
-import React, { createContext, useContext, useEffect, useState, useRef } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useRef,
+} from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const ThemeContext = createContext(undefined);
@@ -71,7 +77,9 @@ export const ThemeProvider = ({ children }) => {
   // Helper to enable/disable following system: we intentionally disallow automatic following
   const setFollowSystem = (follow) => {
     if (follow) {
-      console.warn("Following system theme is disabled. Preference remains explicit.");
+      console.warn(
+        "Following system theme is disabled. Preference remains explicit.",
+      );
       return;
     }
     // if disabling follow, ensure an explicit theme is set

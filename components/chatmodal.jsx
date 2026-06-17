@@ -36,6 +36,11 @@ import {
   Pause,
   Volume2,
   Trash2,
+  Calendar,
+  CalendarPlus,
+  CalendarRange,
+  Clock,
+  Download,
 } from "lucide-react-native";
 import { db, handleFirestoreError, OperationType } from "../lib/firebase";
 import SafeImage from "./safeimage";
@@ -66,6 +71,7 @@ import {
   uploadBytes,
   getDownloadURL,
 } from "firebase/storage";
+import * as DocumentPicker from "expo-document-picker";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -113,6 +119,12 @@ const ChatModal = ({
   const [paymentProcessing, setPaymentProcessing] = useState(false);
   const [paymentConfirmed, setPaymentConfirmed] = useState(false);
   const [cachedPrice, setCachedPrice] = useState(0);
+  // Tour / calendar UI state (added incrementally)
+  const [showTourModal, setShowTourModal] = useState(false);
+  const [tourDate, setTourDate] = useState("");
+  const [tourTime, setTourTime] = useState("");
+  const [tourMessage, setTourMessage] = useState("");
+  const [tourLocation, setTourLocation] = useState("");
 
   // helper: parse a price value (number or string) into a numeric amount
   const parsePrice = (p) => {
@@ -243,6 +255,24 @@ const ChatModal = ({
     }
   };
 
+  // Generic file URI uploader (documents, images, etc.)
+  const uploadUriToStorage = async (uri, folder = "documents") => {
+    try {
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      const rawName = (uri || "").split("/").pop() || `file_${Date.now()}`;
+      const safeName = rawName.split("?")[0];
+      const path = `${folder}/${conversationId}/${Date.now()}_${safeName}`;
+      const sRef = storageRef(storage, path);
+      await uploadBytes(sRef, blob);
+      const url = await getDownloadURL(sRef);
+      return { url, path };
+    } catch (err) {
+      console.error("uploadUriToStorage error", err);
+      return { url: null, path: null };
+    }
+  };
+
   // Download a remote URL to a local temp file for playback and return local uri
   const downloadUrlToFile = async (url) => {
     try {
@@ -258,6 +288,265 @@ const ChatModal = ({
       console.error("downloadUrlToFile error", e);
       // If download failed, as a safe fallback return the remote URL so browsers can still play it
       return url;
+    }
+  };
+
+  // Calendar helpers: create Google Calendar URL and ICS content (incremental)
+  const getGoogleCalendarUrl = ({ title, description, start, end, location }) => {
+    const fmtDate = (d) => (new Date(d)).toISOString().replace(/-|:|\.\d+/g, "");
+    const dates = `${fmtDate(start)}/${fmtDate(end)}`;
+    const base = `https://calendar.google.com/calendar/render?action=TEMPLATE`;
+    const params = `&text=${encodeURIComponent(title || "Tour")}&details=${encodeURIComponent(description || "")}&location=${encodeURIComponent(location || "")}&dates=${dates}`;
+    return base + params;
+  };
+
+  const createIcsContent = ({ title, description, start, end, location }) => {
+    const uid = `directrent-${Date.now()}@directrent.app`;
+    const dtStart = (new Date(start)).toISOString().replace(/-|:|\.\d+/g, "");
+    const dtEnd = (new Date(end)).toISOString().replace(/-|:|\.\d+/g, "");
+    return `BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//DirectRent//EN\nBEGIN:VEVENT\nUID:${uid}\nDTSTAMP:${dtStart}\nDTSTART:${dtStart}\nDTEND:${dtEnd}\nSUMMARY:${(title || "Tour").replace(/\n/g, " ")}\nDESCRIPTION:${(description || "").replace(/\n/g, " ")}\nLOCATION:${(location || "").replace(/\n/g, " ")}\nEND:VEVENT\nEND:VCALENDAR`;
+  };
+
+  const downloadIcsFile = async ({ title, description, start, end, location }) => {
+    try {
+      const ics = createIcsContent({ title, description, start, end, location });
+      const filename = `${FileSystem.cacheDirectory}event_${Date.now()}.ics`;
+      await FileSystem.writeAsStringAsync(filename, ics, { encoding: FileSystem.EncodingType.UTF8 });
+      try { await Linking.openURL(filename); } catch(e) { console.warn('ICS open failed', e); }
+      return filename;
+    } catch (err) {
+      console.error("downloadIcsFile error", err);
+      return null;
+    }
+  };
+
+  // Tour / contract handlers (incremental)
+  const handleOpenRequestTour = () => {
+    setTourDate("");
+    setTourTime("");
+    setTourMessage("");
+    setTourLocation(listing?.address || "");
+    setShowTourModal(true);
+  };
+
+  const handleSubmitTourRequest = async () => {
+    if (isSending) return;
+    setIsSending(true);
+    try {
+      const startIso = tourDate && tourTime ? new Date(`${tourDate}T${tourTime}`).toISOString() : new Date().toISOString();
+      const endIso = new Date(new Date(startIso).getTime() + 30 * 60 * 1000).toISOString();
+      const content = `Tour requested: ${tourDate} ${tourTime} - ${tourMessage}`;
+      const convRef = doc(db, "conversations", conversationId);
+      await updateDoc(convRef, { status: "tour_requested", lastMessage: content, updatedAt: serverTimestamp(), [currentUser.role === "tenant" ? "unreadCount_agent" : "unreadCount_tenant"]: increment(1) });
+
+      await addDoc(collection(db, "conversations", conversationId, "messages"), {
+        content: content,
+        senderId: currentUser.id,
+        tenantId: convData?.tenantId || (currentUser.role === "tenant" ? currentUser.id : conversationId.split("_")[0]),
+        agentId: convData?.agentId || listing.agent?.id || "unknown",
+        type: "action",
+        actionType: "tour_requested",
+        meta: { start: startIso, end: endIso, location: tourLocation, message: tourMessage },
+        createdAt: serverTimestamp(),
+      });
+
+      const recipientId = currentUser.role === "tenant" ? (convData?.agentId || listing.agent?.id) : convData?.tenantId;
+      if (recipientId && recipientId !== "unknown") {
+        await createNotification(recipientId, `Tour Requested`, content, "message", "chat", conversationId);
+      }
+
+      setShowTourModal(false);
+    } catch (err) {
+      console.error("submit tour request error", err);
+      setError("Failed to submit tour request.");
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleConfirmTour = async (meta) => {
+    if (isSending) return;
+    setIsSending(true);
+    try {
+      const content = `Tour confirmed for ${(new Date(meta.start)).toLocaleString()}`;
+      const convRef = doc(db, "conversations", conversationId);
+      await updateDoc(convRef, { status: "tour_confirmed", lastMessage: content, updatedAt: serverTimestamp(), [currentUser.role === "tenant" ? "unreadCount_agent" : "unreadCount_tenant"]: increment(1) });
+
+      await addDoc(collection(db, "conversations", conversationId, "messages"), {
+        content: content,
+        senderId: currentUser.id,
+        tenantId: convData?.tenantId || (currentUser.role === "tenant" ? currentUser.id : conversationId.split("_")[0]),
+        agentId: convData?.agentId || listing.agent?.id || "unknown",
+        type: "action",
+        actionType: "tour_confirmed",
+        meta: meta,
+        createdAt: serverTimestamp(),
+      });
+
+      const recipientId = currentUser.role === "tenant" ? (convData?.agentId || listing.agent?.id) : convData?.tenantId;
+      if (recipientId && recipientId !== "unknown") {
+        await createNotification(recipientId, `Tour Confirmed`, content, "message", "chat", conversationId);
+      }
+    } catch (err) {
+      console.error("confirm tour error", err);
+      setError("Failed to confirm tour.");
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleDeclineTour = async (reason = "Not available") => {
+    if (isSending) return;
+    setIsSending(true);
+    try {
+      const content = `Tour declined: ${reason}`;
+      const convRef = doc(db, "conversations", conversationId);
+      await updateDoc(convRef, { status: "tour_declined", lastMessage: content, updatedAt: serverTimestamp(), [currentUser.role === "tenant" ? "unreadCount_agent" : "unreadCount_tenant"]: increment(1) });
+
+      await addDoc(collection(db, "conversations", conversationId, "messages"), {
+        content: content,
+        senderId: currentUser.id,
+        tenantId: convData?.tenantId || (currentUser.role === "tenant" ? currentUser.id : conversationId.split("_")[0]),
+        agentId: convData?.agentId || listing.agent?.id || "unknown",
+        type: "action",
+        actionType: "tour_declined",
+        createdAt: serverTimestamp(),
+      });
+
+      const recipientId = currentUser.role === "tenant" ? (convData?.agentId || listing.agent?.id) : convData?.tenantId;
+      if (recipientId && recipientId !== "unknown") {
+        await createNotification(recipientId, `Tour Declined`, content, "message", "chat", conversationId);
+      }
+    } catch (err) {
+      console.error("decline tour error", err);
+      setError("Failed to decline tour.");
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  // Contract flow handlers
+  const handleSendContract = async () => {
+    if (isSending) return;
+    setIsSending(true);
+    setError(null);
+    try {
+      const res = await DocumentPicker.getDocumentAsync({ type: '*/*' });
+      if (!res || res.type === 'cancel') return;
+      const uri = res.uri;
+      const name = res.name || (uri && uri.split('/').pop()) || `contract_${Date.now()}`;
+      const { url, path } = await uploadUriToStorage(uri, 'contracts');
+      if (!url) throw new Error('Upload failed');
+
+      const tenantId = convData?.tenantId || (currentUser.role === 'tenant' ? currentUser.id : conversationId.split('_')[0]);
+      const agentId = convData?.agentId || listing.agent?.id || 'unknown';
+
+      // Add a document message
+      await addDoc(collection(db, 'conversations', conversationId, 'messages'), {
+        content: `Contract: ${name}`,
+        senderId: currentUser.id,
+        tenantId: tenantId,
+        agentId: agentId,
+        type: 'document',
+        meta: { fileUrl: url, fileName: name, storagePath: path },
+        createdAt: serverTimestamp(),
+      });
+
+      // Add an action message signaling contract sent
+      await addDoc(collection(db, 'conversations', conversationId, 'messages'), {
+        content: `Tenancy agreement "${name}" sent`,
+        senderId: currentUser.id,
+        tenantId: tenantId,
+        agentId: agentId,
+        type: 'action',
+        actionType: 'contract_sent',
+        meta: { fileUrl: url, fileName: name, storagePath: path },
+        createdAt: serverTimestamp(),
+      });
+
+      await updateDoc(doc(db, 'conversations', conversationId), {
+        status: 'contract_sent',
+        lastMessage: `Tenancy agreement "${name}" sent`,
+        updatedAt: serverTimestamp(),
+        [currentUser.role === 'tenant' ? 'unreadCount_agent' : 'unreadCount_tenant']: increment(1),
+      });
+
+    } catch (err) {
+      console.error('handleSendContract error', err);
+      setError('Failed to send contract.');
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleAcceptContract = async (msg) => {
+    if (isSending) return;
+    setIsSending(true);
+    setError(null);
+    try {
+      const tenantId = convData?.tenantId || (currentUser.role === 'tenant' ? currentUser.id : conversationId.split('_')[0]);
+      const agentId = convData?.agentId || listing.agent?.id || 'unknown';
+
+      await addDoc(collection(db, 'conversations', conversationId, 'messages'), {
+        content: `Contract accepted by ${currentUser.firstName || currentUser.email || currentUser.id}`,
+        senderId: currentUser.id,
+        tenantId: tenantId,
+        agentId: agentId,
+        type: 'action',
+        actionType: 'contract_accepted',
+        meta: { originalMessageId: msg.id, fileUrl: msg.meta?.fileUrl },
+        createdAt: serverTimestamp(),
+      });
+
+      await updateDoc(doc(db, 'conversations', conversationId), {
+        status: 'contract_accepted',
+        lastMessage: `Contract accepted`,
+        updatedAt: serverTimestamp(),
+        [currentUser.role === 'tenant' ? 'unreadCount_agent' : 'unreadCount_tenant']: increment(1),
+      });
+
+      // Optionally auto open payment modal for tenant after acceptance
+      if (currentUser.role === 'tenant') {
+        setShowPaymentModal(true);
+      }
+    } catch (err) {
+      console.error('handleAcceptContract error', err);
+      setError('Failed to accept contract.');
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleDeclineContract = async (msg) => {
+    if (isSending) return;
+    setIsSending(true);
+    setError(null);
+    try {
+      const tenantId = convData?.tenantId || (currentUser.role === 'tenant' ? currentUser.id : conversationId.split('_')[0]);
+      const agentId = convData?.agentId || listing.agent?.id || 'unknown';
+
+      await addDoc(collection(db, 'conversations', conversationId, 'messages'), {
+        content: `Contract declined by ${currentUser.firstName || currentUser.email || currentUser.id}`,
+        senderId: currentUser.id,
+        tenantId: tenantId,
+        agentId: agentId,
+        type: 'action',
+        actionType: 'contract_declined',
+        meta: { originalMessageId: msg.id },
+        createdAt: serverTimestamp(),
+      });
+
+      await updateDoc(doc(db, 'conversations', conversationId), {
+        status: 'contract_declined',
+        lastMessage: `Contract declined`,
+        updatedAt: serverTimestamp(),
+        [currentUser.role === 'tenant' ? 'unreadCount_agent' : 'unreadCount_tenant']: increment(1),
+      });
+    } catch (err) {
+      console.error('handleDeclineContract error', err);
+      setError('Failed to decline contract.');
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -503,16 +792,72 @@ const ChatModal = ({
 
   // Tenant-only actions: pay now and report user
   const handlePayNow = async () => {
-    // reuse handleAction to update conversation status and send action message
+    // initiate escrow transaction (creates transaction record and notifies counterpart)
     try {
-      await handleAction(
-        "paid",
-        "Payment of security deposit initiated via in-app payment.",
-        "paid",
-      );
+      await handleInitiateEscrow && handleInitiateEscrow(total);
     } catch (e) {
       console.error("Pay now error", e);
       setError("Failed to initiate payment.");
+    }
+  };
+
+  // Create an escrow transaction record and update conversation status
+  const handleInitiateEscrow = async (amount) => {
+    if (isSending) return;
+    setIsSending(true);
+    setError(null);
+    try {
+      const agentId = listing.agent?.id || convData?.agentId || "unknown";
+      const tenantId = convData?.tenantId || (currentUser.role === "tenant" ? currentUser.id : conversationId.split("_")[0]);
+
+      const txRef = await addDoc(collection(db, "transactions"), {
+        listingId: listing?.id || null,
+        conversationId: conversationId,
+        amount: amount || total,
+        currency: "NGN",
+        payerId: currentUser.id,
+        payeeId: agentId,
+        status: "locked",
+        createdAt: serverTimestamp(),
+      });
+
+      // ensure id is present on doc
+      await updateDoc(txRef, { id: txRef.id }).catch(() => {});
+
+      const content = `Escrow locked for ${formatCurrency(amount || total)} (tx:${txRef.id})`;
+
+      // create action message + update conversation status to escrow_locked
+      await updateDoc(doc(db, "conversations", conversationId), {
+        status: "escrow_locked",
+        lastMessage: content,
+        updatedAt: serverTimestamp(),
+        [currentUser.role === "tenant" ? "unreadCount_agent" : "unreadCount_tenant"]: increment(1),
+      });
+
+      await addDoc(collection(db, "conversations", conversationId, "messages"), {
+        content: content,
+        senderId: currentUser.id,
+        tenantId: tenantId,
+        agentId: agentId,
+        type: "action",
+        actionType: "escrow_locked",
+        meta: { transactionId: txRef.id, amount: amount || total },
+        createdAt: serverTimestamp(),
+      });
+
+      const recipientId = currentUser.role === "tenant" ? agentId : tenantId;
+      if (recipientId && recipientId !== "unknown") {
+        await createNotification(recipientId, `Escrow Locked`, content, "transaction", "chat", conversationId);
+      }
+
+      // reflect in UI
+      setPaymentConfirmed(true);
+      setShowPaymentModal(false);
+    } catch (err) {
+      console.error("handleInitiateEscrow error", err);
+      setError("Failed to lock escrow.");
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -851,8 +1196,106 @@ const ChatModal = ({
     }
   };
 
+  // Document send handler (used by the paperclip button)
+  const handleSendDocument = async () => {
+    if (isSending) return;
+    setIsSending(true);
+    setError(null);
+    try {
+      const res = await DocumentPicker.getDocumentAsync({ type: "*/*" });
+      if (!res || res.type === "cancel") return;
+      const uri = res.uri;
+      const name = res.name || (uri && uri.split("/").pop()) || `file_${Date.now()}`;
+
+      const { url, path } = await uploadUriToStorage(uri, "documents");
+      if (!url) throw new Error("Upload failed");
+
+      const tenantId =
+        convData?.tenantId || (currentUser.role === "tenant" ? currentUser.id : conversationId.split("_")[0]);
+      const agentId = convData?.agentId || listing.agent?.id || "unknown";
+
+      await addDoc(collection(db, "conversations", conversationId, "messages"), {
+        content: name,
+        senderId: currentUser.id,
+        tenantId: tenantId,
+        agentId: agentId,
+        type: "document",
+        meta: { fileUrl: url, fileName: name, storagePath: path },
+        createdAt: serverTimestamp(),
+      });
+
+      await updateDoc(doc(db, "conversations", conversationId), {
+        lastMessage: `File: ${name}`,
+        updatedAt: serverTimestamp(),
+        [currentUser.role === "tenant" ? "unreadCount_agent" : "unreadCount_tenant"]: increment(1),
+      });
+
+      const recipientId = currentUser.role === "tenant" ? agentId : tenantId;
+      if (recipientId && recipientId !== "unknown") {
+        await createNotification(
+          recipientId,
+          `File shared`,
+          `${(currentUser.firstName || "").trim()} shared ${name}`,
+          "message",
+          "chat",
+          conversationId,
+        );
+      }
+    } catch (err) {
+      console.error("handleSendDocument error", err);
+      setError("Failed to upload document.");
+    } finally {
+      setIsSending(false);
+    }
+  };
+
   const renderMessageItem = ({ item: msg }) => {
     if (msg.type === "action") {
+      // Render contract card when contract is sent
+      if (msg.actionType === "contract_sent") {
+        const fileUrl = msg.meta?.fileUrl || msg.fileUrl;
+        const fileName = msg.meta?.fileName || msg.fileName || "Contract";
+        return (
+          <View style={styles.actionMessageContainer}>
+            <View style={styles.actionIconWrapper}>
+              <FileText size={18} color="#4f46e5" />
+            </View>
+            <Text style={styles.actionUpdateLabel}>Contract</Text>
+            <Text style={styles.actionContentText}>{fileName}</Text>
+            <View style={{ flexDirection: "row", marginTop: 8 }}>
+              <TouchableOpacity
+                style={[styles.actionBtnSecondary, { marginRight: 8 }]}
+                onPress={() => {
+                  if (fileUrl) Linking.openURL(fileUrl);
+                }}
+              >
+                <Text style={styles.actionBtnSecondaryText}>Open Contract</Text>
+              </TouchableOpacity>
+
+              {currentUser.role === "tenant" && (
+                <>
+                  <TouchableOpacity
+                    style={[styles.actionBtnSolidPrimary, { marginRight: 8 }]}
+                    onPress={() => handleAcceptContract(msg)}
+                  >
+                    <Text style={styles.actionBtnSolidPrimaryText}>Accept</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.actionBtnSolidSuccess}
+                    onPress={() => handleDeclineContract(msg)}
+                  >
+                    <Text style={styles.actionBtnSolidSuccessText}>Decline</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+            </View>
+            <Text style={styles.actionBlockFooter}>Verified Property Block</Text>
+          </View>
+        );
+      }
+
+      // Default action render
       return (
         <View style={styles.actionMessageContainer}>
           <View style={styles.actionIconWrapper}>
@@ -1067,130 +1510,71 @@ const ChatModal = ({
               </View>
             </View>
 
-            {/* Dynamic Transaction Action Triggers */}
-            <View style={styles.actionTriggersScrollWrapper}>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.actionHorizontalScroll}
-              >
-                {currentUser.role === "tenant" && (
-                  <>
-                    {(convStatus === "inquiry" ||
-                      convStatus === "negotiating") && (
-                      <TouchableOpacity
-                        style={styles.actionBtnPrimary}
-                        onPress={() =>
-                          handleAction(
-                            "contract_requested",
-                            "I'd like to request a formal contract for this property.",
-                            "contract_requested",
-                          )
-                        }
-                      >
-                        <FileText
-                          size={14}
-                          color="#4338ca"
-                          style={{ marginRight: 6 }}
-                        />
-                        <Text style={styles.actionBtnPrimaryText}>
-                          Request Contract
-                        </Text>
-                      </TouchableOpacity>
-                    )}
-                    {convStatus === "contract_sent" && (
-                      <TouchableOpacity
-                        style={styles.actionBtnSuccess}
-                        onPress={() =>
-                          handleAction(
-                            "paid",
-                            "Payment of security deposit has been initiated.",
-                            "paid",
-                          )
-                        }
-                      >
-                        <CreditCard
-                          size={14}
-                          color="#047857"
-                          style={{ marginRight: 6 }}
-                        />
-                        <Text style={styles.actionBtnSuccessText}>
-                          Pay Deposit
-                        </Text>
-                      </TouchableOpacity>
-                    )}
-                  </>
-                )}
+            {/* Pipeline / Milestones Header */}
+            <View style={{ backgroundColor: '#ffffff', borderBottomWidth: 1, borderColor: '#eef2f7', paddingVertical: 8 }}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 12, alignItems: 'center' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  {/* Step 1: Inspection */}
+                  <View style={{ alignItems: 'center', marginRight: 10 }}>
+                    <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: convStatus !== 'inquiry' ? '#065f46' : '#f1f5f9', alignItems: 'center', justifyContent: 'center' }}>
+                      <Calendar size={14} color={convStatus !== 'inquiry' ? '#ffffff' : '#065f46'} />
+                    </View>
+                    <Text style={{ fontSize: 11, marginTop: 6, color: convStatus !== 'inquiry' ? '#065f46' : '#64748b', fontWeight: '700' }}>Inspection</Text>
+                  </View>
 
-                {currentUser.role === "agent" && (
-                  <>
-                    {convStatus === "contract_requested" && (
-                      <TouchableOpacity
-                        style={styles.actionBtnSolidPrimary}
-                        onPress={() =>
-                          handleAction(
-                            "contract_sent",
-                            "I have prepared and sent the draft contract for your review.",
-                            "contract_sent",
-                          )
-                        }
-                      >
-                        <FileText
-                          size={14}
-                          color="#ffffff"
-                          style={{ marginRight: 6 }}
-                        />
-                        <Text style={styles.actionBtnSolidPrimaryText}>
-                          Send Contract
-                        </Text>
-                      </TouchableOpacity>
-                    )}
-                    {convStatus === "paid" && (
-                      <TouchableOpacity
-                        style={styles.actionBtnSolidSuccess}
-                        onPress={() =>
-                          handleAction(
-                            "completed",
-                            "Transaction completed successfully. Welcome to your new home!",
-                            "completed",
-                          )
-                        }
-                      >
-                        <CheckCircle2
-                          size={14}
-                          color="#ffffff"
-                          style={{ marginRight: 6 }}
-                        />
-                        <Text style={styles.actionBtnSolidSuccessText}>
-                          Close Transaction
-                        </Text>
-                      </TouchableOpacity>
-                    )}
-                  </>
-                )}
+                  <ChevronRight size={16} color="#cbd5e1" />
 
-                <TouchableOpacity
-                  style={styles.actionBtnSecondary}
-                  onPress={() => {}}
-                >
-                  <Text style={styles.actionBtnSecondaryText}>
-                    Negotiate Rent
-                  </Text>
-                </TouchableOpacity>
+                  {/* Step 2: Contract */}
+                  <View style={{ alignItems: 'center', marginHorizontal: 10 }}>
+                    <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: (convStatus === 'contract_sent' || convStatus === 'escrow_locked' || convStatus === 'disputed' || convStatus === 'completed') ? '#4338ca' : '#f8fafc', alignItems: 'center', justifyContent: 'center' }}>
+                      <FileText size={14} color={(convStatus === 'contract_sent' || convStatus === 'escrow_locked' || convStatus === 'disputed' || convStatus === 'completed') ? '#ffffff' : '#4338ca'} />
+                    </View>
+                    <Text style={{ fontSize: 11, marginTop: 6, color: (convStatus === 'contract_sent' || convStatus === 'escrow_locked' || convStatus === 'disputed' || convStatus === 'completed') ? '#4338ca' : '#64748b', fontWeight: '700' }}>Contract</Text>
+                  </View>
 
-                <TouchableOpacity
-                  style={styles.actionBtnWhatsApp}
-                  onPress={handleWhatsAppTransition}
-                >
-                  <MessageCircle
-                    size={14}
-                    color="#047857"
-                    style={{ marginRight: 6 }}
-                  />
-                  <Text style={styles.actionBtnWhatsAppText}>
-                    Continue on WhatsApp
-                  </Text>
-                </TouchableOpacity>
+                  <ChevronRight size={16} color="#cbd5e1" />
+
+                  {/* Step 3: Escrow */}
+                  <View style={{ alignItems: 'center', marginHorizontal: 10 }}>
+                    <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: (convStatus === 'escrow_locked' || convStatus === 'disputed' || convStatus === 'completed') ? '#065f46' : '#f1f5f9', alignItems: 'center', justifyContent: 'center' }}>
+                      <CreditCard size={14} color={(convStatus === 'escrow_locked' || convStatus === 'disputed' || convStatus === 'completed') ? '#ffffff' : '#065f46'} />
+                    </View>
+                    <Text style={{ fontSize: 11, marginTop: 6, color: (convStatus === 'escrow_locked' || convStatus === 'disputed' || convStatus === 'completed') ? '#065f46' : '#64748b', fontWeight: '700' }}>Escrow</Text>
+                  </View>
+
+                  <ChevronRight size={16} color="#cbd5e1" />
+
+                  {/* Step 4: Handoff */}
+                  <View style={{ alignItems: 'center', marginLeft: 10 }}>
+                    <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: convStatus === 'completed' ? '#10b981' : '#f1f5f9', alignItems: 'center', justifyContent: 'center' }}>
+                      <CheckCircle2 size={14} color={convStatus === 'completed' ? '#ffffff' : '#10b981'} />
+                    </View>
+                    <Text style={{ fontSize: 11, marginTop: 6, color: convStatus === 'completed' ? '#10b981' : '#64748b', fontWeight: '700' }}>Handoff</Text>
+                  </View>
+
+                </View>
+
+                {/* Right-side quick action (tenant/agent specific) */}
+                <View style={{ marginLeft: 12, alignItems: 'center', justifyContent: 'center' }}>
+                  {currentUser.role === 'tenant' ? (
+                    convStatus === 'contract_sent' ? (
+                      <TouchableOpacity onPress={() => setShowPaymentModal(true)} style={{ backgroundColor: '#065f46', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 }}>
+                        <Text style={{ color: '#fff', fontWeight: '900', fontSize: 12 }}>Pay Deposit</Text>
+                      </TouchableOpacity>
+                    ) : convStatus === 'inquiry' ? (
+                      <TouchableOpacity onPress={() => handleOpenRequestTour()} style={{ backgroundColor: '#4338ca', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 }}>
+                        <Text style={{ color: '#fff', fontWeight: '900', fontSize: 12 }}>Book Tour</Text>
+                      </TouchableOpacity>
+                    ) : null
+                  ) : (
+                    convStatus === 'tour_requested' ? (
+                      <TouchableOpacity onPress={() => handleConfirmTour({ start: new Date().toISOString(), end: new Date(new Date().getTime() + 30*60000).toISOString() })} style={{ backgroundColor: '#065f46', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 }}>
+                        <Text style={{ color: '#fff', fontWeight: '900', fontSize: 12 }}>Confirm Tour</Text>
+                      </TouchableOpacity>
+                    ) : null
+                  )}
+                </View>
+
               </ScrollView>
             </View>
 
@@ -1325,6 +1709,15 @@ const ChatModal = ({
                     />
                   )}
 
+                  {/* Attach document button */}
+                  <TouchableOpacity
+                    style={[styles.consoleMicBtn, { marginRight: 8 }]}
+                    onPress={handleSendDocument}
+                    disabled={isSending}
+                  >
+                    <Paperclip size={18} color="#0f172a" />
+                  </TouchableOpacity>
+
                   <TouchableOpacity
                     style={[
                       styles.consoleSendBtn,
@@ -1432,6 +1825,77 @@ const ChatModal = ({
                       </TouchableOpacity>
                     </View>
                   )}
+                </View>
+              </View>
+            )}
+
+            {/* Tour Request Modal */}
+            {showTourModal && (
+              <View style={styles.tourModalBackdrop}>
+                <View style={styles.tourModalCard}>
+                  <Text style={styles.tourModalTitle}>Request a Tour</Text>
+                  <Text style={styles.tourModalSubtitle}>
+                    {listing.title}
+                  </Text>
+
+                  <View style={styles.tourFormGroup}>
+                    <Text style={styles.tourLabel}>Date</Text>
+                    <TextInput
+                      value={tourDate}
+                      onChangeText={setTourDate}
+                      placeholder="Select a date"
+                      style={styles.tourInput}
+                    />
+                  </View>
+
+                  <View style={styles.tourFormGroup}>
+                    <Text style={styles.tourLabel}>Time</Text>
+                    <TextInput
+                      value={tourTime}
+                      onChangeText={setTourTime}
+                      placeholder="Select a time"
+                      style={styles.tourInput}
+                    />
+                  </View>
+
+                  <View style={styles.tourFormGroup}>
+                    <Text style={styles.tourLabel}>Location</Text>
+                    <TextInput
+                      value={tourLocation}
+                      onChangeText={setTourLocation}
+                      placeholder="Tour location"
+                      style={styles.tourInput}
+                    />
+                  </View>
+
+                  <View style={styles.tourFormGroup}>
+                    <Text style={styles.tourLabel}>Message</Text>
+                    <TextInput
+                      value={tourMessage}
+                      onChangeText={setTourMessage}
+                      placeholder="Any specific requests?"
+                      style={styles.tourInput}
+                    />
+                  </View>
+
+                  <View style={styles.tourActionsRow}>
+                    <TouchableOpacity
+                      style={styles.tourCancelBtn}
+                      onPress={() => setShowTourModal(false)}
+                    >
+                      <Text style={styles.tourCancelText}>Cancel</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.tourSubmitBtn}
+                      onPress={handleSubmitTourRequest}
+                      disabled={isSending}
+                    >
+                      <Text style={styles.tourSubmitText}>
+                        {isSending ? "Sending..." : "Request Tour"}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               </View>
             )}
@@ -1622,7 +2086,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#f8fafc",
-  },
+   },
   propertyReferenceBanner: {
     paddingHorizontal: 16,
     paddingVertical: 10,
@@ -1876,7 +2340,7 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 0,
   },
   bubbleOther: {
-    backgroundColor: "#ffffff",
+    backgroundColor: "#f1f5f9",
     borderWidth: 1,
     borderColor: "#e2e8f0",
     borderBottomLeftRadius: 0,
@@ -1952,58 +2416,6 @@ const styles = StyleSheet.create({
   },
   audioOther: {
     backgroundColor: "#f1f5f9",
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-  },
-  audioWaveformWrapper: {
-    flex: 1,
-    marginRight: 12,
-  },
-  waveformBarsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 2,
-    height: 20,
-    marginBottom: 2,
-  },
-  waveformBar: {
-    width: 2,
-    borderRadius: 1,
-  },
-  barActiveOwn: {
-    backgroundColor: "#ffffff",
-  },
-  barActiveOther: {
-    backgroundColor: "#3b82f6",
-  },
-  barInactiveOwn: {
-    backgroundColor: "rgba(255, 255, 255, 0.3)",
-  },
-  barInactiveOther: {
-    backgroundColor: "#cbd5e1",
-  },
-  audioTimeText: {
-    fontSize: 10,
-    fontWeight: "700",
-  },
-  textWhiteMuted: {
-    color: "rgba(255, 255, 255, 0.8)",
-  },
-  textSlateMuted: {
-    color: "#64748b",
-  },
-  audioPlayBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  audioPlayBtnOwn: {
-    backgroundColor: "#ffffff",
-  },
-  audioPlayBtnOther: {
-    backgroundColor: "#3b82f6",
   },
   inputConsolePanel: {
     paddingHorizontal: 12,
@@ -2014,7 +2426,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 0,
     right: 0,
-    bottom: 0,
+       bottom: 0,
     elevation: 20,
     zIndex: 50,
   },
@@ -2289,6 +2701,95 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "700",
     color: "#0f172a",
+  },
+  tourModalBackdrop: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    top: 0,
+    backgroundColor: "rgba(15, 23, 42, 0.8)",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 200,
+  },
+  tourModalCard: {
+    width: "90%",
+    backgroundColor: "#ffffff",
+    padding: 18,
+    borderRadius: 14,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.1,
+    shadowRadius: 20,
+    elevation: 12,
+  },
+  tourModalTitle: {
+    fontSize: 16,
+    fontWeight: "900",
+    color: "#0f172a",
+    marginBottom: 8,
+  },
+  tourModalSubtitle: {
+    fontSize: 14,
+    color: "#64748b",
+    marginBottom: 16,
+  },
+  tourFormGroup: {
+    width: "100%",
+    marginBottom: 12,
+  },
+  tourLabel: {
+    fontSize: 12,
+    color: "#334155",
+    fontWeight: "700",
+    marginBottom: 4,
+  },
+  tourInput: {
+    height: 44,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: "#f8fafc",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    color: "#0f172a",
+  },
+  tourActionsRow: {
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 12,
+  },
+  tourCancelBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tourCancelText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#0f172a",
+  },
+  tourSubmitBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    alignItems: "center",
+    borderRadius: 10,
+    backgroundColor: "#065f46",
+    minWidth: 96,
+  },
+  tourSubmitText: {
+    fontSize: 13,
+    fontWeight: "900",
+    color: "#ffffff",
   },
 });
 

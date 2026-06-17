@@ -49,7 +49,7 @@
         "expo-build-properties",
         {
           "android": {
-            "enableMinifyInReleaseBuilds": true,
+            "enableProguardInReleaseBuilds": true,
             "enableShrinkResourcesInReleaseBuilds": true,
             "extraProguardRules": "-keep class com.facebook.react.turbomodule.core.** { *; }",
             "packagingOptions": {
@@ -61,7 +61,7 @@
             "splits": {
               "abi": {
                 "enable": true,
-                "universalApk": false
+                "universalApk": true
               }
             }
           }
